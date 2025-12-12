@@ -4,7 +4,7 @@ const client = require("prom-client");
 const app = express();
 app.use(express.json());
 
-let CHAOS_LATENCY = 0; // <--- Chaos latency global flag
+let CHAOS_LATENCY = 0;
 
 const register = new client.Registry();
 client.collectDefaultMetrics({ register });
@@ -25,9 +25,6 @@ const httpRequests = new client.Counter({
 register.registerMetric(httpLatency);
 register.registerMetric(httpRequests);
 
-// ============================================
-// CHAOS INJECTION ENDPOINT
-// ============================================
 app.post("/chaos/latency", (req, res) => {
   const { latency_ms, duration_seconds, reason } = req.body;
 
@@ -50,9 +47,7 @@ app.post("/chaos/latency", (req, res) => {
   });
 });
 
-// ============================================
 // CHAOS LATENCY MIDDLEWARE
-// ============================================
 app.use((req, res, next) => {
   if (CHAOS_LATENCY > 0) {
     setTimeout(() => next(), CHAOS_LATENCY);
@@ -61,10 +56,8 @@ app.use((req, res, next) => {
   }
 });
 
-// ============================================
 // DEPLOYMENT STATE (simulates rollback)
-// ============================================
-let currentDeployment = 100; // Start with "good" deployment
+let currentDeployment = 100; // 100 is good deployment 101 is bad
 let deploymentHistory = [
   {
     id: 100,
@@ -98,7 +91,7 @@ app.post("/deployment/:id/activate", (req, res) => {
     deployment.rollbackReason = reason;
     currentDeployment = deploymentId;
     console.log(
-      `✅ Rolled back to deployment ${deploymentId} (${deployment.sha})`
+      `Rolled back to deployment ${deploymentId} (${deployment.sha})`
     );
     console.log(`   Reason: ${reason}`);
     console.log(`   Confidence: ${confidence}%`);
@@ -128,9 +121,7 @@ app.get("/deployment/status", (req, res) => {
   });
 });
 
-// ============================================
 // METRICS MIDDLEWARE
-// ============================================
 app.use((req, res, next) => {
   const endTimer = httpLatency.startTimer();
 
@@ -151,9 +142,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ============================================
 // HEALTH CHECK
-// ============================================
 app.get("/health", (req, res) => {
   const isHealthy = currentDeployment !== 101;
   res.status(isHealthy ? 200 : 503).json({
@@ -163,9 +152,7 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ============================================
 // USER PROFILE
-// ============================================
 app.get("/api/user/profile", (req, res) => {
   if (currentDeployment === 101) {
     setTimeout(() => {
@@ -176,9 +163,7 @@ app.get("/api/user/profile", (req, res) => {
   }
 });
 
-// ============================================
 // REALISTIC PAGERDUTY-STYLE ALERTS
-// ============================================
 app.get("/alerts", (req, res) => {
   const timestamp = new Date().toISOString();
 
@@ -277,9 +262,7 @@ app.get("/alerts", (req, res) => {
   }
 });
 
-// ============================================
-// REALISTIC STRUCTURED LOGS (JSON)
-// ============================================
+//STRUCTURED LOGS (JSON)
 app.get("/logs", (req, res) => {
   const timestamp = new Date().toISOString();
 
@@ -456,9 +439,7 @@ app.get("/logs", (req, res) => {
   }
 });
 
-// ============================================
 // PAYMENT API
-// ============================================
 app.post("/api/payment", (req, res) => {
   if (currentDeployment === 101) {
     const failureRate = 0.75;
@@ -490,9 +471,7 @@ app.post("/api/payment", (req, res) => {
   }
 });
 
-// ============================================
 // DEMO INCIDENT
-// ============================================
 app.post("/demo/trigger-incident", (req, res) => {
   currentDeployment = 101;
   deploymentHistory.forEach((d) => (d.status = "inactive"));
@@ -511,9 +490,7 @@ app.post("/demo/trigger-incident", (req, res) => {
   });
 });
 
-// ============================================
 // RAW PROMETHEUS METRICS
-// ============================================
 app.get("/metrics", async (req, res) => {
   const isBad = currentDeployment === 101;
 
@@ -584,9 +561,7 @@ active_connections{service="payment-api",environment="production"} ${
   res.end(prometheusMetrics + customMetrics);
 });
 
-// ============================================
 // CLEAN JSON METRICS (GRAFANA-STYLE)
-// ============================================
 app.get("/metrics/json", (req, res) => {
   const isBad = currentDeployment === 101;
   const timestamp = Date.now();
@@ -644,10 +619,10 @@ app.listen(PORT, () => {
   console.log(`🚀 Payment API running on port ${PORT}`);
   console.log(
     `📊 Current deployment: ${currentDeployment} (${
-      currentDeployment === 101 ? "❌ BAD" : "✅ GOOD"
+      currentDeployment === 101 ? "BAD" : "GOOD"
     })`
   );
-  console.log(`\n📍 Endpoints:`);
+  console.log(`\n Endpoints:`);
   console.log(`   POST /chaos/latency`);
   console.log(`   GET  /health`);
   console.log(`   GET  /metrics                (Prometheus format)`);
@@ -658,13 +633,13 @@ app.listen(PORT, () => {
   console.log(`   GET  /deployment/status`);
   console.log(`   POST /deployment/:id/activate`);
   console.log(`   POST /demo/trigger-incident`);
-  console.log(`\n🎯 Demo flow:`);
+  console.log(`\n Demo flow:`);
   console.log(`   1. Service starts healthy with deployment 100`);
   console.log(`   2. Trigger incident OR enable chaos mode`);
   console.log(`   3. AI analyzes and recommends rollback`);
   console.log(`   4. Auto-rollback to deployment 100 (if needed)`);
   console.log(`   5. Metrics improve, incident resolved`);
-  console.log(`\n🔥 Chaos mode:`);
+  console.log(`\n Chaos mode:`);
   console.log(`   - Set chaos_mode: true in Kestra workflow`);
   console.log(`   - Injects 600ms latency into all requests`);
   console.log(`   - Boosts P99 latency: 180ms → 780ms`);
