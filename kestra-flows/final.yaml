@@ -592,47 +592,34 @@ tasks:
                 - id: perform_rollback
                   type: io.kestra.plugin.core.flow.Sequential
                   tasks:
-                    - id: rollback
+                    # Trigger GitHub Action workflow_dispatch
+                    - id: trigger_github_action
                       type: io.kestra.plugin.core.http.Request
-                      uri: "{{ inputs.service_url }}/deployment/{{ outputs.parse_ai_decision.vars.deployment_to_rollback }}/activate"
+                      uri: "https://api.github.com/repos/{{ inputs.deployments_repo }}/actions/workflows/rollback.yml/dispatches"
                       method: POST
-                      contentType: application/json
+                      headers:
+                        Authorization: "token {{ inputs.github_token }}"
+                        Accept: "application/vnd.github+json"
+                        Content-Type: "application/json"
                       body: |
                         {
-                          "reason": "Automatic rollback from deployment {{ outputs.parse_metrics.vars.deployment_id }}",
-                          "confidence": {{ outputs.parse_ai_decision.vars.confidence_score }},
-                          "rollback_to": {{ outputs.parse_ai_decision.vars.deployment_to_rollback }},
-                          "execution_id": "{{ execution.id }}"
+                          "ref": "master",
+                          "inputs": {
+                            "rollback_to": "{{ outputs.parse_ai_decision.vars.deployment_to_rollback }}",
+                            "service": "{{ inputs.service_name }}",
+                            "environment": "{{ inputs.environment }}",
+                            "execution_id": "{{ execution.id }}"
+                          }
                         }
 
                     - id: log_rollback_success
                       type: io.kestra.plugin.core.log.Log
-                      message: "✅ Rollback completed: deployment {{ outputs.parse_metrics.vars.deployment_id }} → {{ outputs.parse_ai_decision.vars.deployment_to_rollback }}"
-
-                    - id: update_github_deployment_status
-                      type: io.kestra.plugin.core.flow.If
-                      condition: "{{ inputs.github_token != 'mock' }}"
-                      then:
-                        - id: github_create_deployment_status
-                          type: io.kestra.plugin.core.http.Request
-                          uri: "https://api.github.com/repos/{{ inputs.deployments_repo }}/deployments/{{ outputs.parse_ai_decision.vars.deployment_to_rollback }}/statuses"
-                          method: POST
-                          headers:
-                            Authorization: "token {{ inputs.github_token }}"
-                            Accept: "application/vnd.github.v3+json"
-                          body: |
-                            {
-                              "state": "success",
-                              "description": "Auto-rolled back by AI Incident Commander",
-                              "environment": "{{ inputs.environment }}",
-                              "log_url": "https://kestra.io/execution/{{ execution.id }}"
-                            }
-                          allowFailed: true
+                      message: "✔ GitHub Action triggered for rollback → {{ outputs.parse_ai_decision.vars.deployment_to_rollback }}"
 
               else:
                 - id: skip_rollback_log
                   type: io.kestra.plugin.core.log.Log
-                  message: "⚠️ Rollback skipped - Confidence {{ outputs.parse_ai_decision.vars.confidence_score }}% below threshold {{ inputs.min_confidence_for_rollback }}% or action is '{{ outputs.parse_ai_decision.vars.recommended_action }}'"
+                  message: "⚠️ Rollback skipped - Confidence {{ outputs.parse_ai_decision.vars.confidence_score }}% or action '{{ outputs.parse_ai_decision.vars.recommended_action }}'"
 
             - id: slack_notify_p0
               type: io.kestra.plugin.core.http.Request

@@ -563,53 +563,75 @@ active_connections{service="payment-api",environment="production"} ${
 
 // CLEAN JSON METRICS (GRAFANA-STYLE)
 app.get("/metrics/json", (req, res) => {
-  const isBad = currentDeployment === 101;
   const timestamp = Date.now();
 
-  // Add chaos latency boost to metrics if chaos mode is active
-  const chaosBoost = CHAOS_LATENCY || 0;
+  const isBad = currentDeployment === 101;
+  const isGood = currentDeployment !== 101;
 
-  // Chaos also increases error rate slightly
-  const chaosErrorBoost = CHAOS_LATENCY > 0 ? 3 : 0;
+  // Chaos mode modifications
+  const chaosActive = CHAOS_LATENCY > 0;
+  const chaosLatencyBoost = chaosActive ? CHAOS_LATENCY : 0;
+  const chaosErrorBoost = chaosActive ? 3 : 0;
+
+  // --- HEALTHY METRICS (e.g., after rollback to 100) ---
+  const healthyMetrics = {
+    error_rate_percent: 0.8 + chaosErrorBoost,
+    p50_latency_ms: 85 + chaosLatencyBoost,
+    p95_latency_ms: 120 + chaosLatencyBoost,
+    p99_latency_ms: 180 + chaosLatencyBoost,
+    requests_per_second: 110,
+    cpu_usage_percent: 45,
+    memory_usage_percent: 52,
+    active_connections: 120,
+  };
+
+  // --- DEGRADED METRICS (deployment 101 or chaos) ---
+  const degradedMetrics = {
+    error_rate_percent: 15.5 + chaosErrorBoost,
+    p50_latency_ms: 450 + chaosLatencyBoost,
+    p95_latency_ms: 850 + chaosLatencyBoost,
+    p99_latency_ms: 1200 + chaosLatencyBoost,
+    requests_per_second: 25,
+    cpu_usage_percent: 92,
+    memory_usage_percent: 88,
+    active_connections: 450,
+  };
+
+  // Choose final metrics
+  const finalMetrics = isBad || chaosActive ? degradedMetrics : healthyMetrics;
+
+  // Choose health status
+  const healthStatus = isBad || chaosActive ? "degraded" : "healthy";
+
+  // Prepare deployment info
+  const info = deploymentHistory.find((d) => d.id === currentDeployment) || {};
 
   res.json({
     deployment_id: currentDeployment,
     timestamp: new Date().toISOString(),
-    health_status: isBad || CHAOS_LATENCY > 0 ? "degraded" : "healthy",
-    metrics: {
-      error_rate_percent: (isBad ? 15.5 : 0.8) + chaosErrorBoost,
-      p50_latency_ms: (isBad ? 450 : 85) + chaosBoost,
-      p95_latency_ms: (isBad ? 850 : 120) + chaosBoost,
-      p99_latency_ms: (isBad ? 1200 : 180) + chaosBoost,
-      requests_per_second: isBad ? 25 : 98,
-      cpu_usage_percent: isBad ? 92 : 45,
-      memory_usage_percent: isBad ? 88 : 52,
-      active_connections: isBad ? 450 : 120,
-    },
+
+    health_status: healthStatus,
+
+    metrics: finalMetrics,
+
     recent_errors:
-      isBad || CHAOS_LATENCY > 0
+      isBad || chaosActive
         ? [
             "Database connection timeout",
             "Payment gateway unreachable",
             "Circuit breaker opened",
           ]
         : [],
+
     deployment_info: {
       id: currentDeployment,
-      sha:
-        deploymentHistory.find((d) => d.id === currentDeployment)?.sha ||
-        "unknown",
-      message:
-        deploymentHistory.find((d) => d.id === currentDeployment)?.message ||
-        "unknown",
-      deployed_at:
-        deploymentHistory.find((d) => d.id === currentDeployment)?.timestamp ||
-        timestamp,
-      status:
-        deploymentHistory.find((d) => d.id === currentDeployment)?.status ||
-        "unknown",
+      sha: info.sha || "unknown",
+      message: info.message || "unknown",
+      deployed_at: info.timestamp || timestamp,
+      status: info.status || (isBad ? "bad" : "stable"),
     },
-    chaos_active: CHAOS_LATENCY > 0,
+
+    chaos_active: chaosActive,
     chaos_latency_ms: CHAOS_LATENCY,
   });
 });
