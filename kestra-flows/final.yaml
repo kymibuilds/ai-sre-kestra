@@ -4,17 +4,20 @@ namespace: hackathon.sre
 description: |
   AI-powered autonomous incident response system that monitors, analyzes, and remediates production incidents.
   Features: Anomaly detection, chaos engineering mode, autonomous rollback, health monitoring, incident history.
+  Integrations: GitHub (deployment tracking), PagerDuty (incident management), Slack (notifications).
 
 inputs:
   - id: github_token
     type: STRING
     required: true
-    defaults: "abc123"
+    defaults: "mock"
+    description: "GitHub token for deployment history. Use 'mock' for demo mode."
 
   - id: pagerduty_token
     type: STRING
     required: true
-    defaults: "abc123"
+    defaults: "mock"
+    description: "PagerDuty API token. Use 'mock' for demo mode."
 
   - id: slack_webhook
     type: STRING
@@ -24,10 +27,7 @@ inputs:
   - id: deployments_repo
     type: STRING
     defaults: "demo/service"
-
-  - id: k8s_namespace
-    type: STRING
-    defaults: "production"
+    description: "GitHub repo in format 'owner/repo'"
 
   - id: service_name
     type: STRING
@@ -66,6 +66,16 @@ inputs:
     defaults: false
     description: "Enable chaos injection for testing (injects 600ms latency)"
 
+  - id: pagerduty_service_id
+    type: STRING
+    defaults: "PSERVICE1"
+    description: "PagerDuty service ID for incident creation"
+
+  - id: pagerduty_escalation_policy
+    type: STRING
+    defaults: "PEPOLICY1"
+    description: "PagerDuty escalation policy ID"
+
 tasks:
   # ============================================
   # PHASE 0 — CHAOS INJECTION (OPTIONAL)
@@ -91,7 +101,129 @@ tasks:
         message: "🔥 Chaos mode: Injected 600ms latency for 30s"
 
   # ============================================
-  # PHASE 1 — OBSERVE
+  # PHASE 1 — FETCH DEPLOYMENT HISTORY (GitHub)
+  # ============================================
+  - id: fetch_deployment_history
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ inputs.github_token != 'mock' }}"
+    then:
+      - id: github_fetch_deployments
+        type: io.kestra.plugin.core.http.Request
+        uri: "https://api.github.com/repos/{{ inputs.deployments_repo }}/deployments"
+        method: GET
+        headers:
+          Authorization: "token {{ inputs.github_token }}"
+          Accept: "application/vnd.github.v3+json"
+        allowFailed: true
+
+      - id: parse_github_deployments
+        type: io.kestra.plugin.scripts.python.Script
+        docker:
+          image: python:3.11-slim
+        beforeCommands:
+          - pip install kestra
+        script: |
+          import json
+          import sys
+          from kestra import Kestra
+
+          try:
+              deployments_raw = """{{ outputs.github_fetch_deployments.body }}"""
+              deployments = json.loads(deployments_raw) if isinstance(deployments_raw, str) else deployments_raw
+              
+              # Extract last 5 deployments
+              deployment_history = []
+              for dep in deployments[:5]:
+                  deployment_history.append({
+                      "id": dep.get("id"),
+                      "sha": dep.get("sha", "unknown")[:7],
+                      "environment": dep.get("environment", "unknown"),
+                      "created_at": dep.get("created_at", "unknown"),
+                      "ref": dep.get("ref", "unknown")
+                  })
+              
+              Kestra.outputs({
+                  "deployment_history": json.dumps(deployment_history),
+                  "latest_sha": deployment_history[0]["sha"] if deployment_history else "unknown",
+                  "source": "github"
+              })
+              
+              print(f"✅ Fetched {len(deployment_history)} deployments from GitHub", file=sys.stderr)
+              
+          except Exception as e:
+              print(f"⚠️ GitHub fetch failed: {e}, using mock data", file=sys.stderr)
+              mock_history = [
+                  {"id": 101, "sha": "abc1234", "environment": "production", "created_at": "2025-12-12T10:00:00Z", "ref": "main"},
+                  {"id": 100, "sha": "def5678", "environment": "production", "created_at": "2025-12-11T15:30:00Z", "ref": "main"}
+              ]
+              Kestra.outputs({
+                  "deployment_history": json.dumps(mock_history),
+                  "latest_sha": "abc1234",
+                  "source": "mock"
+              })
+    else:
+      - id: use_mock_deployments
+        type: io.kestra.plugin.scripts.python.Script
+        docker:
+          image: python:3.11-slim
+        beforeCommands:
+          - pip install kestra
+        script: |
+          import json
+          from kestra import Kestra
+
+          mock_history = [
+              {"id": 101, "sha": "abc1234", "environment": "production", "created_at": "2025-12-12T10:00:00Z", "ref": "main"},
+              {"id": 100, "sha": "def5678", "environment": "production", "created_at": "2025-12-11T15:30:00Z", "ref": "main"},
+              {"id": 99, "sha": "ghi9012", "environment": "production", "created_at": "2025-12-10T09:15:00Z", "ref": "main"}
+          ]
+
+          Kestra.outputs({
+              "deployment_history": json.dumps(mock_history),
+              "latest_sha": "abc1234",
+              "source": "mock"
+          })
+
+          print("📦 Using mock deployment history", file=sys.stderr)
+
+  # ============================================
+  # PHASE 1B — CONSOLIDATE DEPLOYMENT DATA
+  # ============================================
+  - id: consolidate_deployment_data
+    type: io.kestra.plugin.scripts.python.Script
+    docker:
+      image: python:3.11-slim
+    beforeCommands:
+      - pip install kestra
+    script: |
+      import json
+      import sys
+      from kestra import Kestra
+
+      # Read GitHub outputs safely (if they exist)
+      gh_history = """{{ outputs.parse_github_deployments.deployment_history | default('') }}"""
+      gh_source = """{{ outputs.parse_github_deployments.source | default('') }}"""
+
+      if gh_history.strip():
+          # GitHub returned real data
+          Kestra.outputs({
+              "deployment_history": gh_history,
+              "source": gh_source or "github"
+          })
+          print("Using GitHub deployment history", file=sys.stderr)
+      else:
+          # Use mock fallback (task always exists when token == 'mock')
+          mock_history = """{{ outputs.use_mock_deployments.deployment_history | default('') }}"""
+          mock_source = """{{ outputs.use_mock_deployments.source | default('mock') }}"""
+
+          Kestra.outputs({
+              "deployment_history": mock_history,
+              "source": mock_source
+          })
+          print("Using MOCK deployment history", file=sys.stderr)
+
+  # ============================================
+  # PHASE 2 — OBSERVE
   # ============================================
   - id: collect_signals
     type: io.kestra.plugin.core.flow.Parallel
@@ -112,7 +244,7 @@ tasks:
         method: GET
 
   # ============================================
-  # PHASE 2 — PARSE METRICS
+  # PHASE 3 — PARSE METRICS
   # ============================================
   - id: parse_metrics
     type: io.kestra.plugin.scripts.python.Script
@@ -126,12 +258,8 @@ tasks:
       from kestra import Kestra
 
       try:
-          # FIXED: Wrap template in triple quotes to handle string responses safely
           raw_body = """{{ outputs.fetch_metrics.body }}"""
           
-          print(f"RAW BODY TYPE: {type(raw_body)}", file=sys.stderr)
-          
-          # Handle if it's already a dict or if it's a string
           if isinstance(raw_body, dict):
               metrics = raw_body
           elif isinstance(raw_body, str):
@@ -139,9 +267,6 @@ tasks:
           else:
               raise ValueError(f"Unexpected type: {type(raw_body)}")
           
-          print(f"PARSED METRICS: {json.dumps(metrics, indent=2)}", file=sys.stderr)
-          
-          # Extract metrics from JSON response
           m = metrics.get('metrics', {})
           
           error_rate = float(m.get('error_rate_percent', 0))
@@ -175,7 +300,6 @@ tasks:
           
       except Exception as e:
           print(f"❌ ERROR parsing metrics: {e}", file=sys.stderr)
-          print(f"Exception type: {type(e).__name__}", file=sys.stderr)
           import traceback
           traceback.print_exc(file=sys.stderr)
           
@@ -192,7 +316,7 @@ tasks:
           })
 
   # ============================================
-  # PHASE 3 — ANOMALY DETECTION
+  # PHASE 4 — ANOMALY DETECTION
   # ============================================
   - id: anomaly_detection
     type: io.kestra.plugin.scripts.python.Script
@@ -235,11 +359,11 @@ tasks:
       print(f"   Total anomalies: {len(anomalies)}", file=sys.stderr)
 
   # ============================================
-  # PHASE 4 — AI ANALYSIS
+  # PHASE 5 — AI ANALYSIS
   # ============================================
   - id: ai_incident_analysis
     type: io.kestra.plugin.openai.ChatCompletion
-    description: AI decision engine with anomaly context
+    description: AI decision engine with deployment history context
     apiKey: "{{ secret('OPENAI_API_KEY') }}"
     model: "gpt-4o-mini"
     temperature: 0.3
@@ -254,7 +378,8 @@ tasks:
             "incident_summary": "string",
             "root_cause_hypothesis": "string",
             "deployment_to_rollback": 100,
-            "recommended_action": "rollback" | "monitor" | "escalate"
+            "recommended_action": "rollback" | "monitor" | "escalate",
+            "pagerduty_priority": "P1" | "P2" | "P3" | "P4" | "P5"
           }
 
           Rules:
@@ -266,20 +391,20 @@ tasks:
           - P99 latency > 800ms is P0 critical
           - Error rate > 5% or P99 > 500ms is P1
           - CPU/Memory > 90% is concerning
-          - Look for correlation between deployment_id and degraded metrics
-          - Consider the detected anomalies in your analysis
-          - For deployment_to_rollback: suggest the previous known good deployment (typically deployment_id - 1)
+          - Consider deployment history when suggesting rollbacks
+          - pagerduty_priority should align with severity (P0→P1, P1→P2, etc.)
 
-          NO OTHER FIELDS.
-          NO nested objects.
-          NO markdown.
-          ONLY this JSON object.
+          NO OTHER FIELDS. NO nested objects. NO markdown. ONLY this JSON object.
 
       - role: user
         content: |
           SERVICE: {{ inputs.service_name }}
           ENVIRONMENT: {{ inputs.environment }}
           TIMESTAMP: {{ execution.startDate }}
+
+          DEPLOYMENT HISTORY:
+          {{ outputs.consolidate_deployment_data.vars.deployment_history }}
+          (Source: {{ outputs.consolidate_deployment_data.vars.source }})
 
           CURRENT METRICS:
           - Error Rate: {{ outputs.parse_metrics.vars.error_rate }}%
@@ -303,13 +428,12 @@ tasks:
 
           MIN_CONFIDENCE_THRESHOLD: {{ inputs.min_confidence_for_rollback }}
 
-          Analyze the incident considering both metrics and detected anomalies.
-          Pay special attention to error rate and latency metrics - they are real production data.
-          If deployment {{ outputs.parse_metrics.vars.deployment_id }} is causing issues, suggest rolling back to deployment {{ outputs.parse_metrics.vars.deployment_id - 1 }}
+          Analyze the incident considering metrics, anomalies, and deployment history.
+          If rollback is needed, suggest the previous deployment from the history.
           Respond with ONLY valid JSON.
 
   # ============================================
-  # PHASE 5 — PARSE AI OUTPUT
+  # PHASE 6 — PARSE AI OUTPUT
   # ============================================
   - id: parse_ai_decision
     type: io.kestra.plugin.scripts.python.Script
@@ -341,19 +465,71 @@ tasks:
           print(f"Raw content: {content}", file=sys.stderr)
           sys.exit(1)
 
-      # Output variables using Kestra.outputs()
       Kestra.outputs({
           'severity': data.get('severity', 'UNKNOWN'),
           'confidence_score': data.get('confidence_score', 0),
           'incident_summary': data.get('incident_summary', 'No summary'),
           'root_cause_hypothesis': data.get('root_cause_hypothesis', 'Unknown'),
           'deployment_to_rollback': data.get('deployment_to_rollback', 100),
-          'recommended_action': data.get('recommended_action', 'monitor')
+          'recommended_action': data.get('recommended_action', 'monitor'),
+          'pagerduty_priority': data.get('pagerduty_priority', 'P3')
       })
 
-      # Debug output
       print(json.dumps(data, indent=2), file=sys.stderr)
 
+  # ============================================
+  # PHASE 7 — CREATE PAGERDUTY INCIDENT
+  # ============================================
+  - id: create_pagerduty_incident
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ outputs.parse_ai_decision.vars.severity == 'P0' or outputs.parse_ai_decision.vars.severity == 'P1' }}"
+    then:
+      - id: check_pagerduty_token
+        type: io.kestra.plugin.core.flow.If
+        condition: "{{ inputs.pagerduty_token != 'mock' }}"
+        then:
+          - id: pagerduty_create_incident
+            type: io.kestra.plugin.core.http.Request
+            uri: "https://api.pagerduty.com/incidents"
+            method: POST
+            headers:
+              Authorization: "Token token={{ inputs.pagerduty_token }}"
+              Accept: "application/vnd.pagerduty+json;version=2"
+              Content-Type: "application/json"
+              From: "ai-incident-commander@kestra.io"
+            body: |
+              {
+                "incident": {
+                  "type": "incident",
+                  "title": "[{{ outputs.parse_ai_decision.vars.severity }}] {{ inputs.service_name }} - {{ outputs.parse_ai_decision.vars.incident_summary }}",
+                  "service": {
+                    "id": "{{ inputs.pagerduty_service_id }}",
+                    "type": "service_reference"
+                  },
+                  "urgency": "high",
+                  "body": {
+                    "type": "incident_body",
+                    "details": "{{ outputs.parse_ai_decision.vars.root_cause_hypothesis }}\n\nAnomalies: {{ outputs.anomaly_detection.vars.summary }}\n\nError Rate: {{ outputs.parse_metrics.vars.error_rate }}%\nP99 Latency: {{ outputs.parse_metrics.vars.p99_latency }}ms\n\nExecution: {{ execution.id }}"
+                  },
+                  "escalation_policy": {
+                    "id": "{{ inputs.pagerduty_escalation_policy }}",
+                    "type": "escalation_policy_reference"
+                  }
+                }
+              }
+            allowFailed: true
+
+          - id: log_pagerduty_success
+            type: io.kestra.plugin.core.log.Log
+            message: "✅ PagerDuty incident created"
+        else:
+          - id: log_pagerduty_mock
+            type: io.kestra.plugin.core.log.Log
+            message: "📟 PagerDuty mock mode - incident would be created with priority {{ outputs.parse_ai_decision.vars.pagerduty_priority }}"
+
+  # ============================================
+  # PHASE 8 — CONFIDENCE CHECK & ESCALATION
+  # ============================================
   - id: check_confidence_threshold
     type: io.kestra.plugin.core.flow.If
     condition: "{{ outputs.parse_ai_decision.vars.confidence_score < 70 }}"
@@ -399,7 +575,7 @@ tasks:
           }
 
   # ============================================
-  # PHASE 6 — ROUTE BY SEVERITY
+  # PHASE 9 — ROUTE BY SEVERITY
   # ============================================
   - id: route_by_severity
     type: io.kestra.plugin.core.flow.Switch
@@ -409,7 +585,6 @@ tasks:
         - id: handle_p0
           type: io.kestra.plugin.core.flow.Sequential
           tasks:
-            # Check confidence before rollback
             - id: evaluate_rollback_decision
               type: io.kestra.plugin.core.flow.If
               condition: "{{ outputs.parse_ai_decision.vars.confidence_score >= inputs.min_confidence_for_rollback and outputs.parse_ai_decision.vars.recommended_action == 'rollback' }}"
@@ -433,6 +608,26 @@ tasks:
                     - id: log_rollback_success
                       type: io.kestra.plugin.core.log.Log
                       message: "✅ Rollback completed: deployment {{ outputs.parse_metrics.vars.deployment_id }} → {{ outputs.parse_ai_decision.vars.deployment_to_rollback }}"
+
+                    - id: update_github_deployment_status
+                      type: io.kestra.plugin.core.flow.If
+                      condition: "{{ inputs.github_token != 'mock' }}"
+                      then:
+                        - id: github_create_deployment_status
+                          type: io.kestra.plugin.core.http.Request
+                          uri: "https://api.github.com/repos/{{ inputs.deployments_repo }}/deployments/{{ outputs.parse_ai_decision.vars.deployment_to_rollback }}/statuses"
+                          method: POST
+                          headers:
+                            Authorization: "token {{ inputs.github_token }}"
+                            Accept: "application/vnd.github.v3+json"
+                          body: |
+                            {
+                              "state": "success",
+                              "description": "Auto-rolled back by AI Incident Commander",
+                              "environment": "{{ inputs.environment }}",
+                              "log_url": "https://kestra.io/execution/{{ execution.id }}"
+                            }
+                          allowFailed: true
 
               else:
                 - id: skip_rollback_log
@@ -509,6 +704,13 @@ tasks:
                       "text": {
                         "type": "mrkdwn",
                         "text": "*Action Taken:*\n{{ outputs.parse_ai_decision.vars.recommended_action }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Deployment Source:*\n{{ outputs.consolidate_deployment_data.vars.source }}"
                       }
                     },
                     {
@@ -596,7 +798,7 @@ tasks:
           message: "Invalid AI output or missing severity."
 
   # ============================================
-  # PHASE 7 — HEALTH CHECK AFTER REMEDIATION
+  # PHASE 10 — HEALTH CHECK AFTER REMEDIATION
   # ============================================
   - id: post_remediation_health_check
     type: io.kestra.plugin.core.flow.Sequential
@@ -627,7 +829,6 @@ tasks:
           from kestra import Kestra
 
           try:
-              # FIXED: Wrap template in triple quotes
               raw_body = """{{ outputs.fetch_post_metrics.body }}"""
               
               if isinstance(raw_body, dict):
@@ -668,7 +869,6 @@ tasks:
           import sys
           from kestra import Kestra
 
-          # Get before and after metrics
           before_error_rate = {{ outputs.parse_metrics.vars.error_rate }}
           after_error_rate = {{ outputs.parse_post_metrics.vars.error_rate }}
 
@@ -678,7 +878,6 @@ tasks:
           before_deployment = {{ outputs.parse_metrics.vars.deployment_id }}
           after_deployment = {{ outputs.parse_post_metrics.vars.deployment_id }}
 
-          # Calculate improvements
           if before_error_rate > 0:
               error_improvement_pct = ((before_error_rate - after_error_rate) / before_error_rate) * 100
           else:
@@ -689,7 +888,6 @@ tasks:
           else:
               latency_improvement_pct = 0
 
-          # Determine health status
           if after_error_rate < 1 and after_p99 < 200:
               health_status = "FULLY_RECOVERED"
           elif after_error_rate < before_error_rate * 0.5 and latency_improvement_pct > 30:
@@ -758,7 +956,7 @@ tasks:
           }
 
   # ============================================
-  # PHASE 8 — SAVE INCIDENT SNAPSHOT
+  # PHASE 11 — SAVE INCIDENT SNAPSHOT
   # ============================================
   - id: save_incident_snapshot
     type: io.kestra.plugin.scripts.python.Script
@@ -770,50 +968,65 @@ tasks:
       import json
       from kestra import Kestra
 
+      # Convert booleans safely
+      chaos_mode = "{{ inputs.chaos_mode }}".lower() == "true"
+      pagerduty_used = "{{ inputs.pagerduty_token }}" != "mock"
+      deployment_changed = "{{ outputs.compare_health_status.vars.deployment_changed }}".lower() == "true"
+
       snapshot = {
           "execution_id": "{{ execution.id }}",
           "timestamp": "{{ execution.startDate }}",
           "service": "{{ inputs.service_name }}",
           "environment": "{{ inputs.environment }}",
-          "chaos_mode": "{{ inputs.chaos_mode }}",
+          "chaos_mode": chaos_mode,
           "severity": "{{ outputs.parse_ai_decision.vars.severity }}",
-          "confidence": {{ outputs.parse_ai_decision.vars.confidence_score }},
+          "confidence": float("{{ outputs.parse_ai_decision.vars.confidence_score }}"),
           "summary": "{{ outputs.parse_ai_decision.vars.incident_summary }}",
           "root_cause": "{{ outputs.parse_ai_decision.vars.root_cause_hypothesis }}",
           "action_taken": "{{ outputs.parse_ai_decision.vars.recommended_action }}",
+          "deployment_source": "{{ outputs.consolidate_deployment_data.vars.source }}",
+          "pagerduty_priority": "{{ outputs.parse_ai_decision.vars.pagerduty_priority }}",
+
           "anomalies": {
-              "count": {{ outputs.anomaly_detection.vars.count }},
+              "count": int("{{ outputs.anomaly_detection.vars.count }}"),
               "summary": "{{ outputs.anomaly_detection.vars.summary }}"
           },
+
           "metrics": {
               "before": {
-                  "error_rate": {{ outputs.parse_metrics.vars.error_rate }},
-                  "p99_latency": {{ outputs.parse_metrics.vars.p99_latency }},
-                  "p95_latency": {{ outputs.parse_metrics.vars.p95_latency }},
-                  "cpu_usage": {{ outputs.parse_metrics.vars.cpu_usage }},
-                  "memory_usage": {{ outputs.parse_metrics.vars.memory_usage }},
-                  "deployment_id": {{ outputs.parse_metrics.vars.deployment_id }},
+                  "error_rate": float("{{ outputs.parse_metrics.vars.error_rate }}"),
+                  "p99_latency": float("{{ outputs.parse_metrics.vars.p99_latency }}"),
+                  "p95_latency": float("{{ outputs.parse_metrics.vars.p95_latency }}"),
+                  "cpu_usage": float("{{ outputs.parse_metrics.vars.cpu_usage }}"),
+                  "memory_usage": float("{{ outputs.parse_metrics.vars.memory_usage }}"),
+                  "deployment_id": int("{{ outputs.parse_metrics.vars.deployment_id }}"),
                   "health_status": "{{ outputs.parse_metrics.vars.health_status }}"
               },
               "after": {
-                  "error_rate": {{ outputs.compare_health_status.vars.after_error_rate }},
-                  "p99_latency": {{ outputs.compare_health_status.vars.after_p99_latency }},
-                  "deployment_id": {{ outputs.parse_post_metrics.vars.deployment_id }},
+                  "error_rate": float("{{ outputs.compare_health_status.vars.after_error_rate }}"),
+                  "p99_latency": float("{{ outputs.compare_health_status.vars.after_p99_latency }}"),
+                  "deployment_id": int("{{ outputs.parse_post_metrics.vars.deployment_id }}"),
                   "health_status": "{{ outputs.parse_post_metrics.vars.health_status }}"
               },
               "improvement": {
-                  "error_rate_pct": {{ outputs.compare_health_status.vars.error_improvement_pct }},
-                  "latency_pct": {{ outputs.compare_health_status.vars.latency_improvement_pct }}
+                  "error_rate_pct": float("{{ outputs.compare_health_status.vars.error_improvement_pct }}"),
+                  "latency_pct": float("{{ outputs.compare_health_status.vars.latency_improvement_pct }}")
               }
           },
+
           "health_status": "{{ outputs.compare_health_status.vars.health_status }}",
-          "deployment_changed": "{{ outputs.compare_health_status.vars.deployment_changed }}",
+          "deployment_changed": deployment_changed,
+
+          "integrations": {
+              "github": "{{ outputs.consolidate_deployment_data.vars.source }}",
+              "pagerduty": pagerduty_used,
+              "slack": True
+          }
       }
 
       Kestra.outputs(snapshot)
 
       print("=" * 60)
       print("📊 INCIDENT SNAPSHOT SAVED")
-      print("=" * 60)
       print(json.dumps(snapshot, indent=2))
       print("=" * 60)
