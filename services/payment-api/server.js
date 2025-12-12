@@ -112,6 +112,40 @@ app.post("/deployment/:id/activate", (req, res) => {
   });
 });
 
+//dashboard
+app.get("/dashboard", (req, res) => {
+  const isBad = currentDeployment === 101;
+  const chaosActive = CHAOS_LATENCY > 0;
+  
+  res.json({
+    status: isBad || chaosActive ? "🔴 CRITICAL" : "✅ HEALTHY",
+    current_deployment: currentDeployment,
+    chaos_mode: chaosActive,
+    
+    health_summary: {
+      error_rate: isBad ? "15.5%" : "0.8%",
+      p99_latency: isBad ? "1200ms" : "180ms",
+      cpu: isBad ? "92%" : "45%",
+      active_alerts: isBad ? 3 : 0,
+    },
+    
+    recent_deployments: deploymentHistory.map(d => ({
+      id: d.id,
+      sha: d.sha,
+      status: d.status,
+      message: d.message,
+      age_minutes: Math.floor((Date.now() - d.timestamp) / 60000),
+    })),
+    
+    quick_actions: {
+      trigger_incident: "POST /demo/trigger-incident",
+      reset: "POST /demo/reset",
+      enable_chaos: "POST /chaos/latency",
+      rollback: "POST /deployment/100/activate",
+    },
+  });
+});
+
 // Get current deployment status
 app.get("/deployment/status", (req, res) => {
   res.json({
@@ -260,6 +294,27 @@ app.get("/alerts", (req, res) => {
       more: false,
     });
   }
+});
+
+//RESET FOR DEMOS
+app.post("/demo/reset", (req, res) => {
+  currentDeployment = 100;
+  CHAOS_LATENCY = 0;
+  deploymentHistory.forEach((d) => (d.status = "inactive"));
+  const deployment = deploymentHistory.find((d) => d.id === 100);
+  if (deployment) deployment.status = "active";
+
+  console.log("🔄 DEMO RESET: Back to healthy deployment 100");
+  res.json({
+    message: "System reset to healthy state",
+    currentDeployment: 100,
+    chaos_disabled: true,
+    metrics: {
+      error_rate: "0.8%",
+      p99_latency: "180ms",
+      status: "healthy",
+    },
+  });
 });
 
 //STRUCTURED LOGS (JSON)
@@ -637,6 +692,7 @@ app.get("/metrics/json", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
   console.log(`🚀 Payment API running on port ${PORT}`);
   console.log(
