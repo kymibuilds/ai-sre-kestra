@@ -600,6 +600,44 @@ tasks:
                   type: io.kestra.plugin.core.log.Log
                   message: "Rollback skipped - Confidence {{ outputs.parse_ai_decision.vars.confidence_score }}% or action '{{ outputs.parse_ai_decision.vars.recommended_action }}'"
 
+            - id: trigger_pagerduty
+              type: io.kestra.plugin.core.flow.If
+              condition: "{{ inputs.pagerduty_token != 'mock' }}"
+              then:
+                - id: pagerduty_real_alert
+                  type: io.kestra.plugin.core.http.Request
+                  uri: https://events.pagerduty.com/v2/enqueue
+                  method: POST
+                  contentType: application/json
+                  body: |
+                    {
+                      "routing_key": "{{ inputs.pagerduty_token }}",
+                      "event_action": "trigger",
+                      "payload": {
+                        "summary": "P0 CRITICAL: {{ inputs.service_name }} ({{ inputs.environment }}) - {{ outputs.parse_ai_decision.vars.incident_summary }}",
+                        "severity": "critical",
+                        "source": "{{ inputs.service_name }}",
+                        "component": "{{ inputs.environment }}",
+                        "custom_details": {
+                          "incident_summary": "{{ outputs.parse_ai_decision.vars.incident_summary }}",
+                          "root_cause": "{{ outputs.parse_ai_decision.vars.root_cause_hypothesis }}",
+                          "error_rate": "{{ outputs.parse_metrics.vars.error_rate }}%",
+                          "p95_latency": "{{ outputs.parse_metrics.vars.p95_latency }}ms",
+                          "p99_latency": "{{ outputs.parse_metrics.vars.p99_latency }}ms",
+                          "cpu_usage": "{{ outputs.parse_metrics.vars.cpu_usage }}%",
+                          "confidence": "{{ outputs.parse_ai_decision.vars.confidence_score }}%",
+                          "anomalies": "{{ outputs.anomaly_detection.vars.summary }}",
+                          "action_taken": "{{ outputs.parse_ai_decision.vars.recommended_action }}",
+                          "deployment_id": "{{ outputs.parse_metrics.vars.deployment_id }}",
+                          "execution_id": "{{ execution.id }}"
+                        }
+                      }
+                    }
+              else:
+                - id: pagerduty_mock_alert
+                  type: io.kestra.plugin.core.log.Log
+                  message: "🚨 [MOCK] PagerDuty alert triggered - P0 CRITICAL: {{ inputs.service_name }} - {{ outputs.parse_ai_decision.vars.incident_summary }}"
+
             - id: slack_notify_p0
               type: io.kestra.plugin.core.http.Request
               uri: "{{ inputs.slack_webhook }}"
@@ -612,7 +650,7 @@ tasks:
                       "type": "header",
                       "text": {
                         "type": "plain_text",
-                        "text": "P0 CRITICAL INCIDENT",
+                        "text": "🔴 P0 CRITICAL INCIDENT",
                         "emoji": true
                       }
                     },
@@ -687,7 +725,7 @@ tasks:
                       "elements": [
                         {
                           "type": "mrkdwn",
-                          "text": "Execution ID: {{ execution.id }} | Started: {{ execution.startDate }}"
+                          "text": "🚨 PagerDuty alert triggered | Execution ID: {{ execution.id }} | Started: {{ execution.startDate }}"
                         }
                       ]
                     }
@@ -752,6 +790,61 @@ tasks:
         - id: handle_p2
           type: io.kestra.plugin.core.log.Log
           message: "P2 incident logged: {{ outputs.parse_ai_decision.vars.incident_summary }}"
+
+        - id: notify_p2_slack
+          type: io.kestra.plugin.core.http.Request
+          uri: "{{ inputs.slack_webhook }}"
+          method: POST
+          contentType: application/json
+          body: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🟡 P2 Incident",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Service:*\n{{ inputs.service_name }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Confidence:*\n{{ outputs.parse_ai_decision.vars.confidence_score }}%"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Summary:*\n{{ outputs.parse_ai_decision.vars.incident_summary }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Metrics:*\nError Rate: {{ outputs.parse_metrics.vars.error_rate }}% | P99: {{ outputs.parse_metrics.vars.p99_latency }}ms"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "📊 Monitored during business hours • No immediate action required"
+                    }
+                  ]
+                }
+              ]
+            }
 
       P3:
         - id: handle_p3
