@@ -7,6 +7,10 @@ It monitors metrics, logs, deployments, and anomalies, uses a built-in Kestra AI
 
 The result: a hands-off SRE workflow that detects, analyzes, and remediates outages end-to-end.
 
+<p align="center">
+  <img src="docs/architecture.svg" width="800"/>
+</p>
+
 ## What It Does
 ### 1. Detects production issues in real time
 
