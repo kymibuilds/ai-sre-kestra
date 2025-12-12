@@ -36,7 +36,7 @@ app.post("/chaos/latency", (req, res) => {
 
   setTimeout(() => {
     CHAOS_LATENCY = 0;
-    console.log("🧊 CHAOS DISABLED → latency reset");
+    console.log("CHAOS DISABLED → latency reset");
   }, duration_seconds * 1000);
 
   res.json({
