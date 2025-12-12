@@ -1,0 +1,17 @@
+{
+  "name": "payment-api",
+  "version": "1.0.0",
+  "description": "Mock Payment API with chaos engineering for incident response testing",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "prom-client": "^14.2.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

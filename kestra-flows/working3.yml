@@ -1,0 +1,650 @@
+id: ai-incident-commander
+namespace: hackathon.sre
+
+description: |
+  AI-powered autonomous incident response system that monitors, analyzes, and remediates production incidents.
+  Fully mock-integrated for demo (GitHub, PagerDuty, Slack, Telemetry).
+
+inputs:
+  - id: github_token
+    type: STRING
+    required: true
+    defaults: "abc123"
+
+  - id: pagerduty_token
+    type: STRING
+    required: true
+    defaults: "abc123"
+
+  - id: slack_webhook
+    type: STRING
+    required: true
+    defaults: "https://hooks.slack.com/services/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"
+
+  - id: deployments_repo
+    type: STRING
+    defaults: "demo/service"
+
+  - id: k8s_namespace
+    type: STRING
+    defaults: "production"
+
+  - id: service_name
+    type: STRING
+    defaults: "payment-api"
+
+  - id: service_url
+    type: STRING
+    defaults: "http://payment-api:3000"
+
+  - id: environment
+    type: STRING
+    defaults: "production"
+
+  - id: metrics_url
+    type: STRING
+    defaults: "http://payment-api:3000/metrics/json"
+
+  - id: logs_url
+    type: STRING
+    defaults: "http://payment-api:3000/logs"
+
+  - id: alerts_url
+    type: STRING
+    defaults: "http://payment-api:3000/alerts"
+
+  - id: min_confidence_for_rollback
+    type: INT
+    defaults: 80
+
+  - id: enable_auto_remediation
+    type: BOOLEAN
+    defaults: true
+
+tasks:
+  # ============================================
+  # PHASE 1 — OBSERVE
+  # ============================================
+  - id: collect_signals
+    type: io.kestra.plugin.core.flow.Parallel
+    tasks:
+      - id: fetch_metrics
+        type: io.kestra.plugin.core.http.Request
+        uri: "{{ inputs.metrics_url }}"
+        method: GET
+
+      - id: fetch_logs
+        type: io.kestra.plugin.core.http.Request
+        uri: "{{ inputs.logs_url }}"
+        method: GET
+
+      - id: fetch_alerts
+        type: io.kestra.plugin.core.http.Request
+        uri: "{{ inputs.alerts_url }}"
+        method: GET
+
+  # ============================================
+  # PHASE 2 — PARSE METRICS
+  # ============================================
+  - id: parse_metrics
+    type: io.kestra.plugin.scripts.python.Script
+    docker:
+      image: python:3.11-slim
+    beforeCommands:
+      - pip install kestra
+    script: |
+      import json
+      import sys
+      from kestra import Kestra
+
+      try:
+          # Get raw body - might already be parsed by Kestra
+          raw_body = {{ outputs.fetch_metrics.body }}
+          
+          print(f"RAW BODY TYPE: {type(raw_body)}", file=sys.stderr)
+          
+          # Handle if it's already a dict or if it's a string
+          if isinstance(raw_body, dict):
+              metrics = raw_body
+          elif isinstance(raw_body, str):
+              metrics = json.loads(raw_body)
+          else:
+              raise ValueError(f"Unexpected type: {type(raw_body)}")
+          
+          print(f"PARSED METRICS: {json.dumps(metrics, indent=2)}", file=sys.stderr)
+          
+          # Extract metrics from JSON response
+          m = metrics.get('metrics', {})
+          
+          error_rate = float(m.get('error_rate_percent', 0))
+          p95_latency = float(m.get('p95_latency_ms', 0))
+          p99_latency = float(m.get('p99_latency_ms', 0))
+          median_latency = float(m.get('p50_latency_ms', 0))
+          rps = float(m.get('requests_per_second', 0))
+          cpu_usage = float(m.get('cpu_usage_percent', 0))
+          memory_usage = float(m.get('memory_usage_percent', 0))
+          deployment_id = int(metrics.get('deployment_id', 0))
+          health_status = str(metrics.get('health_status', 'unknown'))
+          
+          Kestra.outputs({
+              'error_rate': error_rate,
+              'p95_latency': p95_latency,
+              'p99_latency': p99_latency,
+              'median_latency': median_latency,
+              'rps': rps,
+              'cpu_usage': cpu_usage,
+              'memory_usage': memory_usage,
+              'deployment_id': deployment_id,
+              'health_status': health_status
+          })
+          
+          print(f"✅ Metrics parsed successfully:", file=sys.stderr)
+          print(f"  Error rate: {error_rate}%", file=sys.stderr)
+          print(f"  P99 latency: {p99_latency}ms", file=sys.stderr)
+          print(f"  CPU: {cpu_usage}%", file=sys.stderr)
+          print(f"  Deployment: {deployment_id}", file=sys.stderr)
+          print(f"  Health: {health_status}", file=sys.stderr)
+          
+      except Exception as e:
+          print(f"❌ ERROR parsing metrics: {e}", file=sys.stderr)
+          print(f"Exception type: {type(e).__name__}", file=sys.stderr)
+          import traceback
+          traceback.print_exc(file=sys.stderr)
+          
+          Kestra.outputs({
+              'error_rate': 0,
+              'p95_latency': 0,
+              'p99_latency': 0,
+              'median_latency': 0,
+              'rps': 0,
+              'cpu_usage': 0,
+              'memory_usage': 0,
+              'deployment_id': 0,
+              'health_status': 'unknown'
+          })
+
+  # ============================================
+  # PHASE 3 — ANALYZE
+  # ============================================
+  - id: ai_incident_analysis
+    type: io.kestra.plugin.openai.ChatCompletion
+    description: AI decision engine
+    apiKey: "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"
+    model: "gpt-4o-mini"
+    temperature: 0.3
+    messages:
+      - role: system
+        content: |
+          You MUST respond with exactly this JSON structure:
+
+          {
+            "severity": "P0" | "P1" | "P2" | "P3",
+            "confidence_score": 85,
+            "incident_summary": "string",
+            "root_cause_hypothesis": "string",
+            "deployment_to_rollback": 101,
+            "recommended_action": "rollback" | "monitor" | "escalate"
+          }
+
+          Rules:
+          - confidence_score: 0-100, how confident you are in your analysis
+          - Use "rollback" only if you're confident the deployment caused the issue
+          - Use "monitor" for unclear situations
+          - Use "escalate" for complex issues needing human intervention
+          - Error rate > 10% is P0 critical
+          - P99 latency > 800ms is P0 critical
+          - Error rate > 5% or P99 > 500ms is P1
+          - CPU/Memory > 90% is concerning
+          - Look for correlation between deployment_id and degraded metrics
+
+          NO OTHER FIELDS.
+          NO nested objects.
+          NO markdown.
+          ONLY this JSON object.
+
+      - role: user
+        content: |
+          SERVICE: {{ inputs.service_name }}
+          ENVIRONMENT: {{ inputs.environment }}
+          TIMESTAMP: {{ execution.startDate }}
+
+          CURRENT METRICS:
+          - Error Rate: {{ outputs.parse_metrics.vars.error_rate }}%
+          - P95 Latency: {{ outputs.parse_metrics.vars.p95_latency }}ms
+          - P99 Latency: {{ outputs.parse_metrics.vars.p99_latency }}ms
+          - Median Latency: {{ outputs.parse_metrics.vars.median_latency }}ms
+          - Requests/sec: {{ outputs.parse_metrics.vars.rps }}
+          - CPU Usage: {{ outputs.parse_metrics.vars.cpu_usage }}%
+          - Memory Usage: {{ outputs.parse_metrics.vars.memory_usage }}%
+          - Current Deployment: {{ outputs.parse_metrics.vars.deployment_id }}
+          - Health Status: {{ outputs.parse_metrics.vars.health_status }}
+
+          LOGS:
+          {{ outputs.fetch_logs.body }}
+
+          ALERTS:
+          {{ outputs.fetch_alerts.body }}
+
+          MIN_CONFIDENCE_THRESHOLD: {{ inputs.min_confidence_for_rollback }}
+
+          Analyze the incident and provide your assessment with confidence score.
+          Pay special attention to error rate and latency metrics - they are real production data.
+          Respond with ONLY valid JSON.
+
+  # ============================================
+  # PHASE 4 — PARSE AI OUTPUT
+  # ============================================
+  - id: parse_ai_decision
+    type: io.kestra.plugin.scripts.python.Script
+    docker:
+      image: python:3.11-slim
+    beforeCommands:
+      - pip install kestra
+    script: |
+      import json
+      import sys
+      from kestra import Kestra
+
+      raw_content = """{{ outputs.ai_incident_analysis.choices[0].message.content }}"""
+
+      content = raw_content.strip()
+
+      # Remove markdown code blocks if present
+      if content.startswith('```'):
+          content = content[content.find('\n')+1:]
+      if content.endswith('```'):
+          content = content[:content.rfind('\n')]
+
+      content = content.strip()
+
+      try:
+          data = json.loads(content)
+      except json.JSONDecodeError as e:
+          print(f"ERROR: Failed to parse JSON: {e}", file=sys.stderr)
+          print(f"Raw content: {content}", file=sys.stderr)
+          sys.exit(1)
+
+      # Output variables using Kestra.outputs()
+      Kestra.outputs({
+          'severity': data.get('severity', 'UNKNOWN'),
+          'confidence_score': data.get('confidence_score', 0),
+          'incident_summary': data.get('incident_summary', 'No summary'),
+          'root_cause_hypothesis': data.get('root_cause_hypothesis', 'Unknown'),
+          'deployment_to_rollback': data.get('deployment_to_rollback', 0),
+          'recommended_action': data.get('recommended_action', 'monitor')
+      })
+
+      # Debug output
+      print(json.dumps(data, indent=2), file=sys.stderr)
+
+  # ============================================
+  # PHASE 5 — ROUTE BY SEVERITY
+  # ============================================
+  - id: route_by_severity
+    type: io.kestra.plugin.core.flow.Switch
+    value: "{{ outputs.parse_ai_decision.vars.severity }}"
+    cases:
+      P0:
+        - id: handle_p0
+          type: io.kestra.plugin.core.flow.Sequential
+          tasks:
+            # Check confidence before rollback
+            - id: evaluate_rollback_decision
+              type: io.kestra.plugin.core.flow.If
+              condition: "{{ outputs.parse_ai_decision.vars.confidence_score >= inputs.min_confidence_for_rollback and outputs.parse_ai_decision.vars.recommended_action == 'rollback' }}"
+              then:
+                - id: perform_rollback
+                  type: io.kestra.plugin.core.flow.Sequential
+                  tasks:
+                    - id: rollback
+                      type: io.kestra.plugin.core.http.Request
+                      uri: "http://payment-api:3000/deployment/100/activate"
+                      method: POST
+                      contentType: application/json
+                      body: |
+                        {
+                          "reason": "Automatic rollback from deployment {{ outputs.parse_ai_decision.vars.deployment_to_rollback }}",
+                          "confidence": {{ outputs.parse_ai_decision.vars.confidence_score }}
+                        }
+
+                    - id: log_rollback_success
+                      type: io.kestra.plugin.core.log.Log
+                      message: "✅ Rollback completed for deployment {{ outputs.parse_ai_decision.vars.deployment_to_rollback }}"
+
+              else:
+                - id: skip_rollback_log
+                  type: io.kestra.plugin.core.log.Log
+                  message: "⚠️ Rollback skipped - Confidence {{ outputs.parse_ai_decision.vars.confidence_score }}% below threshold {{ inputs.min_confidence_for_rollback }}% or action is '{{ outputs.parse_ai_decision.vars.recommended_action }}'"
+
+            - id: slack_notify_p0
+              type: io.kestra.plugin.core.http.Request
+              uri: "{{ inputs.slack_webhook }}"
+              method: POST
+              contentType: application/json
+              body: |
+                {
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "🚨 P0 CRITICAL INCIDENT",
+                        "emoji": true
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Service:*\n{{ inputs.service_name }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Environment:*\n{{ inputs.environment }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Severity:*\nP0"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Confidence:*\n{{ outputs.parse_ai_decision.vars.confidence_score }}%"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Incident Summary:*\n{{ outputs.parse_ai_decision.vars.incident_summary }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Root Cause Hypothesis:*\n{{ outputs.parse_ai_decision.vars.root_cause_hypothesis }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Current Metrics:*\n• Error Rate: {{ outputs.parse_metrics.vars.error_rate }}%\n• P95 Latency: {{ outputs.parse_metrics.vars.p95_latency }}ms\n• P99 Latency: {{ outputs.parse_metrics.vars.p99_latency }}ms\n• CPU Usage: {{ outputs.parse_metrics.vars.cpu_usage }}%\n• Deployment: {{ outputs.parse_metrics.vars.deployment_id }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Action Taken:*\n{{ outputs.parse_ai_decision.vars.recommended_action }}"
+                      }
+                    },
+                    {
+                      "type": "divider"
+                    },
+                    {
+                      "type": "context",
+                      "elements": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "Execution ID: {{ execution.id }} | Started: {{ execution.startDate }}"
+                        }
+                      ]
+                    }
+                  ]
+                }
+
+      P1:
+        - id: handle_p1
+          type: io.kestra.plugin.core.http.Request
+          uri: "{{ inputs.slack_webhook }}"
+          method: POST
+          contentType: application/json
+          body: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "⚠️ P1 MAJOR INCIDENT",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Service:*\n{{ inputs.service_name }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Confidence:*\n{{ outputs.parse_ai_decision.vars.confidence_score }}%"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Summary:*\n{{ outputs.parse_ai_decision.vars.incident_summary }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Metrics:*\nError Rate: {{ outputs.parse_metrics.vars.error_rate }}% | P99: {{ outputs.parse_metrics.vars.p99_latency }}ms"
+                  }
+                }
+              ]
+            }
+
+      P2:
+        - id: handle_p2
+          type: io.kestra.plugin.core.log.Log
+          message: "P2 incident logged: {{ outputs.parse_ai_decision.vars.incident_summary }}"
+
+      P3:
+        - id: handle_p3
+          type: io.kestra.plugin.core.log.Log
+          message: "P3 minor issue logged: {{ outputs.parse_ai_decision.vars.incident_summary }}"
+
+      default:
+        - id: handle_invalid_ai_output
+          type: io.kestra.plugin.core.log.Log
+          message: "Invalid AI output or missing severity."
+
+  # ============================================
+  # PHASE 6 — HEALTH CHECK AFTER REMEDIATION
+  # ============================================
+  - id: post_remediation_health_check
+    type: io.kestra.plugin.core.flow.Sequential
+    tasks:
+      - id: wait_for_stabilization
+        type: io.kestra.plugin.core.flow.Sleep
+        duration: PT10S
+
+      - id: fetch_post_metrics
+        type: io.kestra.plugin.core.http.Request
+        uri: "{{ inputs.metrics_url }}"
+        method: GET
+
+      - id: fetch_post_alerts
+        type: io.kestra.plugin.core.http.Request
+        uri: "{{ inputs.alerts_url }}"
+        method: GET
+
+      - id: parse_post_metrics
+        type: io.kestra.plugin.scripts.python.Script
+        docker:
+          image: python:3.11-slim
+        beforeCommands:
+          - pip install kestra
+        script: |
+          import json
+          import sys
+          from kestra import Kestra
+
+          try:
+              # Handle body that might already be parsed
+              raw_body = {{ outputs.fetch_post_metrics.body }}
+              
+              if isinstance(raw_body, dict):
+                  metrics = raw_body
+              elif isinstance(raw_body, str):
+                  metrics = json.loads(raw_body)
+              else:
+                  raise ValueError(f"Unexpected type: {type(raw_body)}")
+              
+              m = metrics.get('metrics', {})
+              
+              Kestra.outputs({
+                  'error_rate': float(m.get('error_rate_percent', 0)),
+                  'p99_latency': float(m.get('p99_latency_ms', 0)),
+                  'deployment_id': int(metrics.get('deployment_id', 0)),
+                  'health_status': str(metrics.get('health_status', 'unknown'))
+              })
+              
+              print(f"✅ Post-metrics parsed: deployment={metrics.get('deployment_id')}, error={m.get('error_rate_percent')}%", file=sys.stderr)
+              
+          except Exception as e:
+              print(f"❌ Error parsing post-metrics: {e}", file=sys.stderr)
+              Kestra.outputs({
+                  'error_rate': 0,
+                  'p99_latency': 0,
+                  'deployment_id': 0,
+                  'health_status': 'unknown'
+              })
+
+      - id: compare_health_status
+        type: io.kestra.plugin.scripts.python.Script
+        docker:
+          image: python:3.11-slim
+        beforeCommands:
+          - pip install kestra
+        script: |
+          import json
+          import sys
+          from kestra import Kestra
+
+          # Get before and after metrics
+          before_error_rate = {{ outputs.parse_metrics.vars.error_rate }}
+          after_error_rate = {{ outputs.parse_post_metrics.vars.error_rate }}
+
+          before_p99 = {{ outputs.parse_metrics.vars.p99_latency }}
+          after_p99 = {{ outputs.parse_post_metrics.vars.p99_latency }}
+
+          before_deployment = {{ outputs.parse_metrics.vars.deployment_id }}
+          after_deployment = {{ outputs.parse_post_metrics.vars.deployment_id }}
+
+          # Calculate improvements
+          if before_error_rate > 0:
+              error_improvement_pct = ((before_error_rate - after_error_rate) / before_error_rate) * 100
+          else:
+              error_improvement_pct = 0
+
+          if before_p99 > 0:
+              latency_improvement_pct = ((before_p99 - after_p99) / before_p99) * 100
+          else:
+              latency_improvement_pct = 0
+
+          # Determine health status
+          if after_error_rate < 1 and after_p99 < 200:
+              health_status = "FULLY_RECOVERED"
+          elif after_error_rate < before_error_rate * 0.5 and latency_improvement_pct > 30:
+              health_status = "SIGNIFICANT_IMPROVEMENT"
+          elif after_error_rate < before_error_rate or after_p99 < before_p99:
+              health_status = "IMPROVING"
+          elif after_error_rate == before_error_rate and after_p99 == before_p99:
+              health_status = "STABLE"
+          else:
+              health_status = "DEGRADED"
+
+          Kestra.outputs({
+              'health_status': health_status,
+              'before_error_rate': before_error_rate,
+              'after_error_rate': after_error_rate,
+              'error_improvement_pct': round(error_improvement_pct, 2),
+              'before_p99_latency': before_p99,
+              'after_p99_latency': after_p99,
+              'latency_improvement_pct': round(latency_improvement_pct, 2),
+              'deployment_changed': before_deployment != after_deployment
+          })
+
+          print(f"Health check complete: {health_status}", file=sys.stderr)
+          print(f"Error rate: {before_error_rate}% -> {after_error_rate}% ({error_improvement_pct:.2f}% improvement)", file=sys.stderr)
+          print(f"P99 latency: {before_p99}ms -> {after_p99}ms ({latency_improvement_pct:.2f}% improvement)", file=sys.stderr)
+          print(f"Deployment: {before_deployment} -> {after_deployment}", file=sys.stderr)
+
+      - id: notify_health_status
+        type: io.kestra.plugin.core.http.Request
+        uri: "{{ inputs.slack_webhook }}"
+        method: POST
+        contentType: application/json
+        body: |
+          {
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "🏥 Post-Remediation Health Check",
+                  "emoji": true
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Status:*\n{{ outputs.compare_health_status.vars.health_status }}"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Error Rate:*\n{{ outputs.compare_health_status.vars.before_error_rate }}% → {{ outputs.compare_health_status.vars.after_error_rate }}%"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*P99 Latency:*\n{{ outputs.compare_health_status.vars.before_p99_latency }}ms → {{ outputs.compare_health_status.vars.after_p99_latency }}ms"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Improvement:*\nError: {{ outputs.compare_health_status.vars.error_improvement_pct }}%\nLatency: {{ outputs.compare_health_status.vars.latency_improvement_pct }}%"
+                  }
+                ]
+              }
+            ]
+          }
+
+  # ============================================
+  # PHASE 7 — FINAL LOG
+  # ============================================
+  - id: log_incident_outcome
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      ==================== INCIDENT COMPLETE ====================
+      Severity: {{ outputs.parse_ai_decision.vars.severity }}
+      Confidence: {{ outputs.parse_ai_decision.vars.confidence_score }}%
+      Action: {{ outputs.parse_ai_decision.vars.recommended_action }}
+      Health Status: {{ outputs.compare_health_status.vars.health_status }}
+      Summary: {{ outputs.parse_ai_decision.vars.incident_summary }}
+
+      METRICS:
+      Before - Error Rate: {{ outputs.parse_metrics.vars.error_rate }}%, P99: {{ outputs.parse_metrics.vars.p99_latency }}ms, Deployment: {{ outputs.parse_metrics.vars.deployment_id }}
+      After  - Error Rate: {{ outputs.compare_health_status.vars.after_error_rate }}%, P99: {{ outputs.compare_health_status.vars.after_p99_latency }}ms, Deployment: {{ outputs.parse_post_metrics.vars.deployment_id }}
+      Improvement - Error: {{ outputs.compare_health_status.vars.error_improvement_pct }}%, Latency: {{ outputs.compare_health_status.vars.latency_improvement_pct }}%
+      ===========================================================
+
+triggers:
+  - id: webhook_alert_trigger
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: "incident-alert-{{ inputs.service_name }}"
+
+  - id: scheduled_health_check
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "* * * * *"
+    description: "Continuous monitoring - checks for incidents every 1 minute (for demo purposes)"
