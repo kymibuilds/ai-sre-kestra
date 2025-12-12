@@ -1,11 +1,11 @@
 # AI Incident Commander
 Autonomous incident response for real-world SRE workflows.
 
-AI Incident Commander is a fully automated incident-response engine built on Kestra, GitHub Actions, Slack, and a live mock microservice that behaves like real production infrastructure.
+AI Incident Commander is an end-to-end automation engine built on Kestra, GitHub Actions, Slack, and a live mock microservice that behaves like real production infrastructure.
 
-It monitors metrics, logs, deployments, and anomalies, uses a built-in Kestra AI Agent to reason about incidents, and when necessary executes an autonomous rollback through GitHub Actions.
+It continuously monitors system signals, reasons about incidents using Kestra’s built-in AI Agent, and executes autonomous remediation such as GitHub-powered rollbacks.
 
-The result: a hands-off SRE workflow that detects, analyzes, and remediates outages end-to-end.
+The result: a hands-free SRE workflow that detects, analyzes, and resolves outages automatically.
 
 <p align="center">
   <img src="docs/architecture.svg" width="800"/>
@@ -13,82 +13,83 @@ The result: a hands-off SRE workflow that detects, analyzes, and remediates outa
 
 ## What It Does
 ### 1. Detects production issues in real time
-
-The system continuously collects signals from a service:
+The workflow continuously collects live operational signals:
 Metrics (/metrics/json)
 Logs (/logs)
 Alerts (/alerts)
 Deployment history (GitHub or mock)
-- this forms the raw context for the AI
+This becomes the full incident context for the AI decision engine.
 
 ### 2. Uses Kestra’s built-in AI Agent to analyze everything
-The AI receives a full incident bundle:
-
-Metrics
-Anomalies
-Logs
-Alerts
+The AI receives a complete incident bundle:
+Metrics & latency breakdown
+Anomaly list
+Logs and alerts
 Deployment history
 Health status
 
 *It produces a structured JSON decision:*
-Severity (P0–P3)
-Confidence score
+Severity: P0 | P1 | P2 | P3
+Confidence score: 0.0 - 1.0
 Incident summary
 Root-cause hypothesis
 Recommended action (rollback / monitor / escalate)
 Deployment to roll back to
 PagerDuty priority
-This is the brain of the workflow.
+This JSON is the brain of the incident workflow.
 
 ### 3. Executes decisions automatically
 
-If the AI determines the incident is severe and confidence is high:
-P0 → Autonomous rollback
-P1 → Immediate major-incident alert
-P2/P3 → Logged and monitored
-
-Rollback uses GitHub Actions workflow_dispatch, so every remediation creates a visible run in:
+Depending on severity + confidence:
+*P0 → Autonomous rollback*
+Triggers GitHub Actions workflow_dispatch.
+Appears directly under:
 `GitHub → Actions → Rollback Deployment`
 
-### 4. Validates the rollback with post-remediation health checks
+*P1 → Immediate major-incident alert*
+Slack notification + PagerDuty (real or mock).
 
-After taking action, Kestra:
+*P2/P3 → Logged and monitored*
+No remediation action.
+
+All execution paths are fully automated.
+
+### 4. Validates recovery with post-remediation health checks
+
+After rollback or remediation, Kestra:
 Waits for stabilization
 Pulls new metrics
 Compares before vs after
-Classifies system state:
-
+Classifies the system:
 FULLY_RECOVERED
 SIGNIFICANT_IMPROVEMENT
 IMPROVING
 STABLE
 DEGRADED
+This ensures the rollback genuinely resolved the incident.
 
-5. Sends clean, structured Slack alerts
+## 5. Sends clean, structured Slack alerts
 
 Two messages go to Slack:
 
 A. The P0 incident alert
 
-Contains:
-
-Summary
-Root cause hypothesis
-Metrics
+Includes:
+Summary & Root cause hypothesis
+Error rate, CPU, latency
+Detected anomalies
 Deployment context
-Anomalies
 Severity + Confidence
 Action taken
 
 *B. The post-remediation health report*
 Shows:
 Before vs after metrics
-Improvement %
-Final system state
+Improvement percentages
+Final recovery classification
 
 ### 6. Stores an incident snapshot for auditing
-At the end of each run, the system saves a complete JSON snapshot:
+Each execution ends with a complete JSON snapshot:
 Metrics (before & after)
 Action taken
 Anomalies
@@ -97,25 +98,25 @@ Deployment changes
 Integrations used
 Health classification
 
+This allows historical replay, analytics, and dashboards.
+
 ## Demo Microservice Included
-The mock payment-api behaves like a real production service:
-Deployment switching
-Bad deployments
-Chaos latency injection
-Realistic metrics
-Realistic errors & logs
-This allows you to run fully autonomous incidents without touching production.
+The mock payment-api replicates real service behavior:
+Activate any deployment
+Trigger bad deployments
+Inject chaos latency
+Emit realistic metrics + errors
+
+You can run fully autonomous incidents without touching production.
 
 ## GitHub Actions Integration
-A real rollback appears in the Actions tab.
-
-Kestra triggers:
-POST /repos/<owner>/<repo>/actions/workflows/rollback.yml/dispatches
-The workflow prints:
+A true rollback is dispatched via:
+```POST /repos/<owner>/<repo>/actions/workflows/rollback.yml/dispatches```
+Every remediation becomes a visible workflow run containing:
 Deployment ID
 Service
 Environment
-Execution ID
+Kestra execution ID
 
 ## Chaos Engineering Mode
 Enable chaos_mode: true in Kestra:
