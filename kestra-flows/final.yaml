@@ -23,6 +23,7 @@ inputs:
     type: STRING
     required: true
     defaults: "https://hooks.slack.com/services/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"
+    description: "Enter your own slack webhook here to recieve messages."
 
   - id: deployments_repo
     type: STRING
@@ -77,9 +78,7 @@ inputs:
     description: "PagerDuty escalation policy ID"
 
 tasks:
-  # ============================================
   # PHASE 0 — CHAOS INJECTION (OPTIONAL)
-  # ============================================
   - id: chaos_inject
     type: io.kestra.plugin.core.flow.If
     condition: "{{ inputs.chaos_mode }}"
@@ -98,11 +97,9 @@ tasks:
 
       - id: log_chaos_injection
         type: io.kestra.plugin.core.log.Log
-        message: "🔥 Chaos mode: Injected 600ms latency for 30s"
+        message: "Chaos mode: Injected 600ms latency for 30s"
 
-  # ============================================
   # PHASE 1 — FETCH DEPLOYMENT HISTORY (GitHub)
-  # ============================================
   - id: fetch_deployment_history
     type: io.kestra.plugin.core.flow.If
     condition: "{{ inputs.github_token != 'mock' }}"
@@ -148,10 +145,10 @@ tasks:
                   "source": "github"
               })
               
-              print(f"✅ Fetched {len(deployment_history)} deployments from GitHub", file=sys.stderr)
+              print(f"Fetched {len(deployment_history)} deployments from GitHub", file=sys.stderr)
               
           except Exception as e:
-              print(f"⚠️ GitHub fetch failed: {e}, using mock data", file=sys.stderr)
+              print(f"GitHub fetch failed: {e}, using mock data", file=sys.stderr)
               mock_history = [
                   {"id": 101, "sha": "abc1234", "environment": "production", "created_at": "2025-12-12T10:00:00Z", "ref": "main"},
                   {"id": 100, "sha": "def5678", "environment": "production", "created_at": "2025-12-11T15:30:00Z", "ref": "main"}
@@ -186,9 +183,7 @@ tasks:
 
           print("📦 Using mock deployment history", file=sys.stderr)
 
-  # ============================================
   # PHASE 1B — CONSOLIDATE DEPLOYMENT DATA
-  # ============================================
   - id: consolidate_deployment_data
     type: io.kestra.plugin.scripts.python.Script
     docker:
@@ -222,9 +217,7 @@ tasks:
           })
           print("Using MOCK deployment history", file=sys.stderr)
 
-  # ============================================
   # PHASE 2 — OBSERVE
-  # ============================================
   - id: collect_signals
     type: io.kestra.plugin.core.flow.Parallel
     tasks:
@@ -243,9 +236,7 @@ tasks:
         uri: "{{ inputs.alerts_url }}"
         method: GET
 
-  # ============================================
   # PHASE 3 — PARSE METRICS
-  # ============================================
   - id: parse_metrics
     type: io.kestra.plugin.scripts.python.Script
     docker:
@@ -291,7 +282,7 @@ tasks:
               'health_status': health_status
           })
           
-          print(f"✅ Metrics parsed successfully:", file=sys.stderr)
+          print(f"  Metrics parsed successfully:", file=sys.stderr)
           print(f"  Error rate: {error_rate}%", file=sys.stderr)
           print(f"  P99 latency: {p99_latency}ms", file=sys.stderr)
           print(f"  CPU: {cpu_usage}%", file=sys.stderr)
@@ -299,7 +290,7 @@ tasks:
           print(f"  Health: {health_status}", file=sys.stderr)
           
       except Exception as e:
-          print(f"❌ ERROR parsing metrics: {e}", file=sys.stderr)
+          print(f" ERROR parsing metrics: {e}", file=sys.stderr)
           import traceback
           traceback.print_exc(file=sys.stderr)
           
@@ -315,9 +306,7 @@ tasks:
               'health_status': 'unknown'
           })
 
-  # ============================================
   # PHASE 4 — ANOMALY DETECTION
-  # ============================================
   - id: anomaly_detection
     type: io.kestra.plugin.scripts.python.Script
     docker:
@@ -355,12 +344,10 @@ tasks:
           "summary": anomaly_summary
       })
 
-      print(f"🔍 Anomaly Detection: {anomaly_summary}", file=sys.stderr)
+      print(f"   Anomaly Detection: {anomaly_summary}", file=sys.stderr)
       print(f"   Total anomalies: {len(anomalies)}", file=sys.stderr)
 
-  # ============================================
   # PHASE 5 — AI ANALYSIS
-  # ============================================
   - id: ai_incident_analysis
     type: io.kestra.plugin.openai.ChatCompletion
     description: AI decision engine with deployment history context
@@ -432,9 +419,7 @@ tasks:
           If rollback is needed, suggest the previous deployment from the history.
           Respond with ONLY valid JSON.
 
-  # ============================================
   # PHASE 6 — PARSE AI OUTPUT
-  # ============================================
   - id: parse_ai_decision
     type: io.kestra.plugin.scripts.python.Script
     docker:
@@ -477,9 +462,7 @@ tasks:
 
       print(json.dumps(data, indent=2), file=sys.stderr)
 
-  # ============================================
   # PHASE 7 — CREATE PAGERDUTY INCIDENT
-  # ============================================
   - id: create_pagerduty_incident
     type: io.kestra.plugin.core.flow.If
     condition: "{{ outputs.parse_ai_decision.vars.severity == 'P0' or outputs.parse_ai_decision.vars.severity == 'P1' }}"
@@ -521,15 +504,13 @@ tasks:
 
           - id: log_pagerduty_success
             type: io.kestra.plugin.core.log.Log
-            message: "✅ PagerDuty incident created"
+            message: " PagerDuty incident created"
         else:
           - id: log_pagerduty_mock
             type: io.kestra.plugin.core.log.Log
-            message: "📟 PagerDuty mock mode - incident would be created with priority {{ outputs.parse_ai_decision.vars.pagerduty_priority }}"
+            message: " PagerDuty mock mode - incident would be created with priority {{ outputs.parse_ai_decision.vars.pagerduty_priority }}"
 
-  # ============================================
   # PHASE 8 — CONFIDENCE CHECK & ESCALATION
-  # ============================================
   - id: check_confidence_threshold
     type: io.kestra.plugin.core.flow.If
     condition: "{{ outputs.parse_ai_decision.vars.confidence_score < 70 }}"
@@ -574,9 +555,7 @@ tasks:
             ]
           }
 
-  # ============================================
   # PHASE 9 — ROUTE BY SEVERITY
-  # ============================================
   - id: route_by_severity
     type: io.kestra.plugin.core.flow.Switch
     value: "{{ outputs.parse_ai_decision.vars.severity }}"
@@ -619,7 +598,7 @@ tasks:
               else:
                 - id: skip_rollback_log
                   type: io.kestra.plugin.core.log.Log
-                  message: "⚠️ Rollback skipped - Confidence {{ outputs.parse_ai_decision.vars.confidence_score }}% or action '{{ outputs.parse_ai_decision.vars.recommended_action }}'"
+                  message: "Rollback skipped - Confidence {{ outputs.parse_ai_decision.vars.confidence_score }}% or action '{{ outputs.parse_ai_decision.vars.recommended_action }}'"
 
             - id: slack_notify_p0
               type: io.kestra.plugin.core.http.Request
@@ -633,7 +612,7 @@ tasks:
                       "type": "header",
                       "text": {
                         "type": "plain_text",
-                        "text": "🚨 P0 CRITICAL INCIDENT",
+                        "text": "P0 CRITICAL INCIDENT",
                         "emoji": true
                       }
                     },
@@ -728,7 +707,7 @@ tasks:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "⚠️ P1 MAJOR INCIDENT",
+                    "text": "P1 MAJOR INCIDENT",
                     "emoji": true
                   }
                 },
@@ -784,9 +763,7 @@ tasks:
           type: io.kestra.plugin.core.log.Log
           message: "Invalid AI output or missing severity."
 
-  # ============================================
   # PHASE 10 — HEALTH CHECK AFTER REMEDIATION
-  # ============================================
   - id: post_remediation_health_check
     type: io.kestra.plugin.core.flow.Sequential
     tasks:
@@ -834,10 +811,10 @@ tasks:
                   'health_status': str(metrics.get('health_status', 'unknown'))
               })
               
-              print(f"✅ Post-metrics parsed: deployment={metrics.get('deployment_id')}, error={m.get('error_rate_percent')}%", file=sys.stderr)
+              print(f" Post-metrics parsed: deployment={metrics.get('deployment_id')}, error={m.get('error_rate_percent')}%", file=sys.stderr)
               
           except Exception as e:
-              print(f"❌ Error parsing post-metrics: {e}", file=sys.stderr)
+              print(f" Error parsing post-metrics: {e}", file=sys.stderr)
               Kestra.outputs({
                   'error_rate': 0,
                   'p99_latency': 0,
@@ -914,7 +891,7 @@ tasks:
                 "type": "header",
                 "text": {
                   "type": "plain_text",
-                  "text": "🏥 Post-Remediation Health Check",
+                  "text": "Post-Remediation Health Check",
                   "emoji": true
                 }
               },
@@ -942,9 +919,7 @@ tasks:
             ]
           }
 
-  # ============================================
   # PHASE 11 — SAVE INCIDENT SNAPSHOT
-  # ============================================
   - id: save_incident_snapshot
     type: io.kestra.plugin.scripts.python.Script
     docker:
@@ -1014,6 +989,6 @@ tasks:
       Kestra.outputs(snapshot)
 
       print("=" * 60)
-      print("📊 INCIDENT SNAPSHOT SAVED")
+      print("INCIDENT SNAPSHOT SAVED")
       print(json.dumps(snapshot, indent=2))
       print("=" * 60)
