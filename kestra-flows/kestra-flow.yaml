@@ -1344,13 +1344,13 @@ errors:
     url: "{{ inputs.slack_webhook }}"
     payload: |
       {
-        "text": "❌ AI Incident Commander workflow failed",
+        "text": "AI Incident Commander workflow failed",
         "blocks": [
           {
             "type": "header",
             "text": {
               "type": "plain_text",
-              "text": "❌ Workflow Failure",
+              "text": "Workflow Failure",
               "emoji": true
             }
           },
