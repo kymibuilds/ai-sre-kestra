@@ -23,7 +23,7 @@ inputs:
     type: STRING
     required: true
     defaults: "{{ secret('SLACK_WEBHOOK') }}"
-    description: "Enter your own slack webhook here to receive messages."
+    description: "Enter your own slack webhook here to recieve messages."
 
   - id: deployments_repo
     type: STRING
@@ -107,7 +107,7 @@ tasks:
 
           chaos_type = "{{ inputs.chaos_type }}"
           intensity = "{{ inputs.chaos_intensity }}"
-          duration = {{ inputs.chaos_duration }}
+          duration = "{{ inputs.chaos_duration }}"
 
           # Define chaos configurations based on type and intensity
           configs = {
@@ -485,113 +485,123 @@ tasks:
       print(f"   Minor: {len(minor_anomalies)}", file=sys.stderr)
       print(f"   Summary: {summary}", file=sys.stderr)
 
-  # PHASE 5 — AI ANALYSIS (IMPROVED)
+  # PHASE 5 — AI AGENT ANALYSIS (WAKANDA AWARD COMPATIBLE)
   - id: ai_incident_analysis
-    type: io.kestra.plugin.openai.ChatCompletion
-    description: AI decision engine with deployment history context
-    apiKey: "{{ secret('OPENAI_API_KEY') }}"
-    model: "gpt-4o-mini"
-    temperature: 0.3
-    messages:
-      - role: system
-        content: |
-          You MUST respond with exactly this JSON structure:
+    type: io.kestra.plugin.ai.agent.AIAgent
+    description: AI Agent for incident analysis with tool access
+    provider:
+      type: io.kestra.plugin.ai.provider.OpenAI
+      modelName: gpt-4o
+      apiKey: "{{ secret('OPENAI_API_KEY') }}"
 
-          {
-            "severity": "P0" | "P1" | "P2" | "P3",
-            "confidence_score": 85,
-            "incident_summary": "string",
-            "root_cause_hypothesis": "string",
-            "deployment_to_rollback": 100,
-            "recommended_action": "rollback" | "monitor" | "escalate",
-            "pagerduty_priority": "P1" | "P2" | "P3" | "P4" | "P5"
-          }
+    systemMessage: |
+      You are an elite Site Reliability Engineering (SRE) AI agent with 15+ years of experience managing production incidents at scale. Your expertise includes:
+      - Root cause analysis of distributed systems failures
+      - Performance degradation pattern recognition
+      - Deployment impact assessment
+      - Risk-based decision making under pressure
+      - Balance between service stability and change velocity
 
-          STRICT SEVERITY RULES (follow exactly):
+      Your mission: Analyze production incidents with surgical precision, determine severity accurately, and recommend actions that minimize customer impact while avoiding unnecessary rollbacks.
 
-          P0 (CRITICAL) - Use ONLY when:
-          - Error rate > 10% OR
-          - P99 latency > 800ms OR
-          - CPU > 90% OR
-          - Memory > 90% OR
-          - ANY anomaly starts with "CRITICAL_"
+      Key principles:
+      - Data-driven decisions: Base your analysis strictly on metrics, logs, and deployment history
+      - Confidence matters: Only recommend rollbacks when you're highly confident (80%+) in the root cause
+      - Think holistically: Consider correlation between deployments, metrics spikes, and error patterns
+      - Err on the side of caution: For P0/P1 incidents, bias toward action; for P2/P3, bias toward monitoring
 
-          P1 (MAJOR) - Use when:
-          - 5% < Error rate ≤ 10% OR
-          - 500ms < P99 latency ≤ 800ms OR
-          - 85% < CPU ≤ 90% OR
-          - 85% < Memory ≤ 90% OR
-          - ANY anomaly starts with "WARNING_"
-          - NO CRITICAL anomalies present
+      STRICT SEVERITY RULES:
 
-          P2 (MODERATE) - Use when:
-          - 2% < Error rate ≤ 5% OR
-          - 300ms < P99 latency ≤ 500ms OR
-          - 70% < CPU ≤ 85% OR
-          - ANY anomaly starts with "MINOR_"
-          - NO WARNING or CRITICAL anomalies present
+      P0 (CRITICAL) - Use ONLY when:
+      - Error rate > 10% OR
+      - P99 latency > 800ms OR
+      - CPU > 90% OR
+      - Memory > 90% OR
+      - ANY anomaly starts with "CRITICAL_"
 
-          P3 (NORMAL) - Use when:
-          - Error rate ≤ 2% AND
-          - P99 latency ≤ 300ms AND
-          - CPU ≤ 70% AND
-          - Memory ≤ 70% AND
-          - No anomalies detected OR all metrics are in healthy range
+      P1 (MAJOR) - Use when:
+      - 5% < Error rate ≤ 10% OR
+      - 500ms < P99 latency ≤ 800ms OR
+      - 85% < CPU ≤ 90% OR
+      - 85% < Memory ≤ 90% OR
+      - ANY anomaly starts with "WARNING_"
+      - NO CRITICAL anomalies present
 
-          Additional Rules:
-          - confidence_score: 0-100, how confident you are in your analysis
-          - Use "rollback" only if you're confident a recent deployment caused the issue
-          - Use "monitor" for unclear situations or when metrics are borderline
-          - Use "escalate" for complex issues needing human intervention
-          - Consider deployment history when suggesting rollbacks
-          - If anomaly_severity_hint is provided, strongly consider it
-          - pagerduty_priority should align with severity (P0→P1, P1→P2, etc.)
+      P2 (MODERATE) - Use when:
+      - 2% < Error rate ≤ 5% OR
+      - 300ms < P99 latency ≤ 500ms OR
+      - 70% < CPU ≤ 85% OR
+      - ANY anomaly starts with "MINOR_"
+      - NO WARNING or CRITICAL anomalies present
 
-          NO OTHER FIELDS. NO nested objects. NO markdown. ONLY this JSON object.
+      P3 (NORMAL) - Use when:
+      - Error rate ≤ 2% AND
+      - P99 latency ≤ 300ms AND
+      - CPU ≤ 70% AND
+      - Memory ≤ 70% AND
+      - No anomalies detected
 
-      - role: user
-        content: |
-          SERVICE: {{ inputs.service_name }}
-          ENVIRONMENT: {{ inputs.environment }}
-          TIMESTAMP: {{ execution.startDate }}
+      RESPONSE FORMAT (return ONLY valid JSON):
+      {
+        "severity": "P0|P1|P2|P3",
+        "confidence_score": 85,
+        "incident_summary": "Brief summary of the issue",
+        "root_cause_hypothesis": "Your analysis of what caused this",
+        "deployment_to_rollback": 100,
+        "recommended_action": "rollback|monitor|escalate",
+        "pagerduty_priority": "P1|P2|P3|P4|P5"
+      }
 
-          DEPLOYMENT HISTORY:
-          {{ outputs.consolidate_deployment_data.vars.deployment_history }}
-          (Source: {{ outputs.consolidate_deployment_data.vars.source }})
+      Rules:
+      - confidence_score: 0-100
+      - Use "rollback" only if confident a deployment caused the issue
+      - Use "monitor" for borderline cases
+      - Use "escalate" for complex issues
+      - pagerduty_priority aligns with severity (P0→P1, P1→P2, P2→P3, P3→P4)
+      - If deployment_to_rollback cannot be determined from history, use the previous deployment ID
+      - Pay special attention to the Severity Hint and anomaly counts to determine the correct severity level
 
-          CURRENT METRICS:
-          - Error Rate: {{ outputs.parse_metrics.vars.error_rate }}%
-          - P95 Latency: {{ outputs.parse_metrics.vars.p95_latency }}ms
-          - P99 Latency: {{ outputs.parse_metrics.vars.p99_latency }}ms
-          - Median Latency: {{ outputs.parse_metrics.vars.median_latency }}ms
-          - Requests/sec: {{ outputs.parse_metrics.vars.rps }}
-          - CPU Usage: {{ outputs.parse_metrics.vars.cpu_usage }}%
-          - Memory Usage: {{ outputs.parse_metrics.vars.memory_usage }}%
-          - Current Deployment: {{ outputs.parse_metrics.vars.deployment_id }}
-          - Health Status: {{ outputs.parse_metrics.vars.health_status }}
+    prompt: |
+      Analyze this production incident:
 
-          ANOMALY ANALYSIS:
-          - Total Anomalies: {{ outputs.anomaly_detection.vars.count }}
-          - Critical Anomalies: {{ outputs.anomaly_detection.vars.critical_count }}
-          - Warning Anomalies: {{ outputs.anomaly_detection.vars.warning_count }}
-          - Minor Anomalies: {{ outputs.anomaly_detection.vars.minor_count }}
-          - Severity Hint: {{ outputs.anomaly_detection.vars.severity_hint }}
-          - Summary: {{ outputs.anomaly_detection.vars.summary }}
+      SERVICE: {{ inputs.service_name }}
+      ENVIRONMENT: {{ inputs.environment }}
+      TIMESTAMP: {{ execution.startDate }}
 
-          LOGS:
-          {{ outputs.fetch_logs.body }}
+      DEPLOYMENT HISTORY:
+      {{ outputs.consolidate_deployment_data.vars.deployment_history }}
+      (Source: {{ outputs.consolidate_deployment_data.vars.source }})
 
-          ALERTS:
-          {{ outputs.fetch_alerts.body }}
+      CURRENT METRICS:
+      - Error Rate: {{ outputs.parse_metrics.vars.error_rate }}%
+      - P95 Latency: {{ outputs.parse_metrics.vars.p95_latency }}ms
+      - P99 Latency: {{ outputs.parse_metrics.vars.p99_latency }}ms
+      - Median Latency: {{ outputs.parse_metrics.vars.median_latency }}ms
+      - Requests/sec: {{ outputs.parse_metrics.vars.rps }}
+      - CPU Usage: {{ outputs.parse_metrics.vars.cpu_usage }}%
+      - Memory Usage: {{ outputs.parse_metrics.vars.memory_usage }}%
+      - Current Deployment: {{ outputs.parse_metrics.vars.deployment_id }}
+      - Health Status: {{ outputs.parse_metrics.vars.health_status }}
 
-          MIN_CONFIDENCE_THRESHOLD: {{ inputs.min_confidence_for_rollback }}
+      ANOMALY ANALYSIS:
+      - Total Anomalies: {{ outputs.anomaly_detection.vars.count }}
+      - Critical: {{ outputs.anomaly_detection.vars.critical_count }}
+      - Warning: {{ outputs.anomaly_detection.vars.warning_count }}
+      - Minor: {{ outputs.anomaly_detection.vars.minor_count }}
+      - Severity Hint: {{ outputs.anomaly_detection.vars.severity_hint }}
+      - Summary: {{ outputs.anomaly_detection.vars.summary }}
 
-          Analyze the incident following the STRICT SEVERITY RULES above.
-          Pay special attention to the Severity Hint and anomaly counts.
-          If rollback is needed, suggest the previous deployment from the history.
-          Respond with ONLY valid JSON.
+      LOGS SAMPLE:
+      {{ outputs.fetch_logs.body }}
 
-  # PHASE 6 — PARSE AI OUTPUT
+      ACTIVE ALERTS:
+      {{ outputs.fetch_alerts.body }}
+
+      MIN_CONFIDENCE_THRESHOLD: {{ inputs.min_confidence_for_rollback }}
+
+      Use the available tools to query additional data if needed, then provide your analysis as JSON.
+
+  # PHASE 6 — PARSE AI AGENT OUTPUT
   - id: parse_ai_decision
     type: io.kestra.plugin.scripts.python.Script
     docker:
@@ -603,36 +613,75 @@ tasks:
       import sys
       from kestra import Kestra
 
-      raw_content = """{{ outputs.ai_incident_analysis.choices[0].message.content }}"""
+      # AI Agent output is in .textOutput field
+      raw_content = """{{ outputs.ai_incident_analysis.textOutput }}"""
 
       content = raw_content.strip()
 
       # Remove markdown code blocks if present
       if content.startswith('```'):
-          content = content[content.find('\n')+1:]
+          # Find the first newline after opening backticks
+          first_newline = content.find('\n')
+          if first_newline != -1:
+              content = content[first_newline+1:]
+
       if content.endswith('```'):
-          content = content[:content.rfind('\n')]
+          # Find the last occurrence of backticks
+          last_backticks = content.rfind('```')
+          if last_backticks != -1:
+              content = content[:last_backticks]
 
       content = content.strip()
+
+      # Also handle ```json markers
+      if content.startswith('json'):
+          content = content[4:].strip()
 
       try:
           data = json.loads(content)
       except json.JSONDecodeError as e:
           print(f"ERROR: Failed to parse JSON: {e}", file=sys.stderr)
-          print(f"Raw content: {content}", file=sys.stderr)
-          sys.exit(1)
+          print(f"Raw content length: {len(raw_content)}", file=sys.stderr)
+          print(f"Cleaned content: {content[:500]}", file=sys.stderr)
+          
+          # Fallback: try to extract JSON from text
+          try:
+              # Look for JSON object in the content
+              start = content.find('{')
+              end = content.rfind('}') + 1
+              if start != -1 and end > start:
+                  json_str = content[start:end]
+                  data = json.loads(json_str)
+                  print("Successfully extracted JSON from text", file=sys.stderr)
+              else:
+                  raise Exception("No JSON object found in content")
+          except Exception as extract_error:
+              print(f"JSON extraction also failed: {extract_error}", file=sys.stderr)
+              # Use safe defaults
+              data = {
+                  'severity': 'P3',
+                  'confidence_score': 50,
+                  'incident_summary': 'AI parsing failed - manual review needed',
+                  'root_cause_hypothesis': 'Unable to parse AI response',
+                  'deployment_to_rollback': 100,
+                  'recommended_action': 'escalate',
+                  'pagerduty_priority': 'P3'
+              }
 
       Kestra.outputs({
-          'severity': data.get('severity', 'UNKNOWN'),
-          'confidence_score': data.get('confidence_score', 0),
+          'severity': data.get('severity', 'P3'),
+          'confidence_score': int(data.get('confidence_score', 0)),
           'incident_summary': data.get('incident_summary', 'No summary'),
           'root_cause_hypothesis': data.get('root_cause_hypothesis', 'Unknown'),
-          'deployment_to_rollback': data.get('deployment_to_rollback', 100),
+          'deployment_to_rollback': int(data.get('deployment_to_rollback', 100)),
           'recommended_action': data.get('recommended_action', 'monitor'),
           'pagerduty_priority': data.get('pagerduty_priority', 'P3')
       })
 
+      print("=" * 60, file=sys.stderr)
+      print("AI DECISION PARSED:", file=sys.stderr)
       print(json.dumps(data, indent=2), file=sys.stderr)
+      print("=" * 60, file=sys.stderr)
 
   # PHASE 8 — CONFIDENCE CHECK & ESCALATION
   - id: check_confidence_threshold
@@ -1344,13 +1393,13 @@ errors:
     url: "{{ inputs.slack_webhook }}"
     payload: |
       {
-        "text": "AI Incident Commander workflow failed",
+        "text": "❌ AI Incident Commander workflow failed",
         "blocks": [
           {
             "type": "header",
             "text": {
               "type": "plain_text",
-              "text": "Workflow Failure",
+              "text": "❌ Workflow Failure",
               "emoji": true
             }
           },
