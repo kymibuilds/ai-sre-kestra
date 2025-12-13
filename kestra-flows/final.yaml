@@ -88,28 +88,7 @@ inputs:
     defaults: "medium"
     description: "Intensity: low, medium, high"
 
-  - id: kubernetes_api_url
-    type: STRING
-    defaults: "https://kubernetes.default.svc"
-    description: "Kubernetes API URL (if using Chaos Mesh)"
-
-  - id: kubernetes_token
-    type: STRING
-    defaults: "mock"
-    description: "Kubernetes service account token (if using Chaos Mesh)"
-
-  - id: chaos_namespace
-    type: STRING
-    defaults: "default"
-    description: "Kubernetes namespace for chaos experiments"
-
-  - id: chaos_label_selector
-    type: STRING
-    defaults: "app=payment-api"
-    description: "Label selector for targeting pods"
-
 tasks:
-
   # PHASE 0 — CHAOS INJECTION (OPTIONAL)
   - id: chaos_inject
     type: io.kestra.plugin.core.flow.If
@@ -125,256 +104,87 @@ tasks:
           import json
           import sys
           from kestra import Kestra
-          
+
           chaos_type = "{{ inputs.chaos_type }}"
           intensity = "{{ inputs.chaos_intensity }}"
-          duration = "{{ inputs.chaos_duration }}"
-          
+          duration = {{ inputs.chaos_duration_seconds }}
+
           # Define chaos configurations based on type and intensity
           configs = {
               "latency": {
-                  "low": {"latency_ms": 200, "method": "http"},
-                  "medium": {"latency_ms": 600, "method": "http"},
-                  "high": {"latency_ms": 1500, "method": "http"}
+                  "low": {"latency_ms": 200, "endpoint": "/chaos/latency"},
+                  "medium": {"latency_ms": 600, "endpoint": "/chaos/latency"},
+                  "high": {"latency_ms": 1500, "endpoint": "/chaos/latency"}
               },
-              "cpu-stress": {
-                  "low": {"workers": 1, "load": 40, "method": "chaos-mesh"},
-                  "medium": {"workers": 1, "load": 80, "method": "chaos-mesh"},
-                  "high": {"workers": 2, "load": 95, "method": "chaos-mesh"}
+              "error-rate": {
+                  "low": {"error_rate_percent": 5, "endpoint": "/chaos/errors"},
+                  "medium": {"error_rate_percent": 15, "endpoint": "/chaos/errors"},
+                  "high": {"error_rate_percent": 30, "endpoint": "/chaos/errors"}
               },
-              "memory-stress": {
-                  "low": {"workers": 1, "size": "64MB", "method": "chaos-mesh"},
-                  "medium": {"workers": 1, "size": "256MB", "method": "chaos-mesh"},
-                  "high": {"workers": 2, "size": "512MB", "method": "chaos-mesh"}
-              },
-              "network-delay": {
-                  "low": {"latency": "100ms", "jitter": "10ms", "method": "chaos-mesh"},
-                  "medium": {"latency": "500ms", "jitter": "50ms", "method": "chaos-mesh"},
-                  "high": {"latency": "2000ms", "jitter": "200ms", "method": "chaos-mesh"}
-              },
-              "pod-kill": {
-                  "low": {"method": "chaos-mesh", "grace_period": "10s"},
-                  "medium": {"method": "chaos-mesh", "grace_period": "5s"},
-                  "high": {"method": "chaos-mesh", "grace_period": "0s"}
+              "cpu-spike": {
+                  "low": {"cpu_percent": 70, "endpoint": "/chaos/cpu"},
+                  "medium": {"cpu_percent": 85, "endpoint": "/chaos/cpu"},
+                  "high": {"cpu_percent": 95, "endpoint": "/chaos/cpu"}
               }
           }
-          
+
           config = configs.get(chaos_type, {}).get(intensity, configs["latency"]["medium"])
           config["chaos_type"] = chaos_type
           config["duration"] = duration
-          
+
           Kestra.outputs({
               "config": json.dumps(config),
-              "method": config.get("method", "http"),
               "chaos_type": chaos_type,
-              "latency_ms": config.get("latency_ms", 600),
-              "workers": config.get("workers", 1),
-              "load": config.get("load", 80),
-              "size": config.get("size", "128MB"),
-              "latency": config.get("latency", "500ms"),
-              "jitter": config.get("jitter", "50ms"),
-              "grace_period": config.get("grace_period", "5s")
+              "endpoint": config.get("endpoint", "/chaos/latency"),
+              "latency_ms": config.get("latency_ms", 0),
+              "error_rate_percent": config.get("error_rate_percent", 0),
+              "cpu_percent": config.get("cpu_percent", 0),
+              "duration_seconds": duration
           })
-          
-          print(f"🌪️ Chaos Config: {chaos_type} ({intensity})", file=sys.stderr)
-          print(f"   Duration: {duration}", file=sys.stderr)
-          print(f"   Method: {config.get('method')}", file=sys.stderr)
 
-      - id: route_chaos_method
-        type: io.kestra.plugin.core.flow.Switch
-        value: "{{ outputs.determine_chaos_config.vars.method }}"
-        cases:
-          
-          # HTTP-based chaos (simple latency injection)
-          http:
-            - id: inject_http_latency
-              type: io.kestra.plugin.core.http.Request
-              uri: "{{ inputs.service_url }}/chaos/latency"
-              method: POST
-              contentType: application/json
-              body: |
-                {
-                  "latency_ms": {{ outputs.determine_chaos_config.vars.latency_ms }},
-                  "duration_seconds": 30,
-                  "reason": "Chaos testing from execution {{ execution.id }}"
-                }
-              allowFailed: true
+          print("╔════════════════════════════════════════╗", file=sys.stderr)
+          print("║    🌪️  CHAOS INJECTION ACTIVE  🌪️     ║", file=sys.stderr)
+          print("╠════════════════════════════════════════╣", file=sys.stderr)
+          print(f"║  Type:      {chaos_type:24s} ║", file=sys.stderr)
+          print(f"║  Intensity: {intensity:24s} ║", file=sys.stderr)
+          print(f"║  Duration:  {duration}s{' ' * (23-len(str(duration)))} ║", file=sys.stderr)
+          print("╚════════════════════════════════════════╝", file=sys.stderr)
 
-            - id: log_http_chaos
-              type: io.kestra.plugin.core.log.Log
-              message: "🌪️ HTTP Chaos: Injected {{ outputs.determine_chaos_config.vars.latency_ms }}ms latency for {{ inputs.chaos_duration }}"
+      - id: inject_http_chaos
+        type: io.kestra.plugin.core.http.Request
+        uri: "{{ inputs.service_url }}{{ outputs.determine_chaos_config.vars.endpoint }}"
+        method: POST
+        contentType: application/json
+        body: |
+          {
+            "latency_ms": {{ outputs.determine_chaos_config.vars.latency_ms }},
+            "error_rate_percent": {{ outputs.determine_chaos_config.vars.error_rate_percent }},
+            "cpu_percent": {{ outputs.determine_chaos_config.vars.cpu_percent }},
+            "duration_seconds": {{ outputs.determine_chaos_config.vars.duration_seconds }},
+            "reason": "Chaos testing from execution {{ execution.id }}"
+          }
+        allowFailed: true
 
-          # Chaos Mesh-based chaos experiments
-          chaos-mesh:
-            - id: check_k8s_token
-              type: io.kestra.plugin.core.flow.If
-              condition: "{{ inputs.kubernetes_token != 'mock' }}"
-              then:
-                - id: build_chaos_mesh_manifest
-                  type: io.kestra.plugin.scripts.python.Script
-                  docker:
-                    image: python:3.11-slim
-                  beforeCommands:
-                    - pip install kestra pyyaml
-                  script: |
-                    import json
-                    import yaml
-                    import sys
-                    from kestra import Kestra
-                    
-                    chaos_type = "{{ outputs.determine_chaos_config.vars.chaos_type }}"
-                    namespace = "{{ inputs.chaos_namespace }}"
-                    label_selector = "{{ inputs.chaos_label_selector }}"
-                    duration = "{{ inputs.chaos_duration }}"
-                    execution_id = "{{ execution.id }}".replace("_", "-")
-                    
-                    # Parse label selector
-                    label_key, label_value = label_selector.split("=")
-                    
-                    manifest = None
-                    
-                    if chaos_type == "cpu-stress":
-                        workers = int("{{ outputs.determine_chaos_config.vars.workers }}")
-                        load = int("{{ outputs.determine_chaos_config.vars.load }}")
-                        
-                        manifest = {
-                            "apiVersion": "chaos-mesh.org/v1alpha1",
-                            "kind": "StressChaos",
-                            "metadata": {
-                                "name": f"cpu-stress-{execution_id}",
-                                "namespace": namespace
-                            },
-                            "spec": {
-                                "mode": "one",
-                                "selector": {
-                                    "namespaces": [namespace],
-                                    "labelSelectors": {label_key: label_value}
-                                },
-                                "duration": duration,
-                                "stressors": {
-                                    "cpu": {
-                                        "workers": workers,
-                                        "load": load
-                                    }
-                                }
-                            }
-                        }
-                    
-                    elif chaos_type == "memory-stress":
-                        workers = int("{{ outputs.determine_chaos_config.vars.workers }}")
-                        size = "{{ outputs.determine_chaos_config.vars.size }}"
-                        
-                        manifest = {
-                            "apiVersion": "chaos-mesh.org/v1alpha1",
-                            "kind": "StressChaos",
-                            "metadata": {
-                                "name": f"memory-stress-{execution_id}",
-                                "namespace": namespace
-                            },
-                            "spec": {
-                                "mode": "one",
-                                "selector": {
-                                    "namespaces": [namespace],
-                                    "labelSelectors": {label_key: label_value}
-                                },
-                                "duration": duration,
-                                "stressors": {
-                                    "memory": {
-                                        "workers": workers,
-                                        "size": size
-                                    }
-                                }
-                            }
-                        }
-                    
-                    elif chaos_type == "network-delay":
-                        latency = "{{ outputs.determine_chaos_config.vars.latency }}"
-                        jitter = "{{ outputs.determine_chaos_config.vars.jitter }}"
-                        
-                        manifest = {
-                            "apiVersion": "chaos-mesh.org/v1alpha1",
-                            "kind": "NetworkChaos",
-                            "metadata": {
-                                "name": f"network-delay-{execution_id}",
-                                "namespace": namespace
-                            },
-                            "spec": {
-                                "action": "delay",
-                                "mode": "all",
-                                "selector": {
-                                    "namespaces": [namespace],
-                                    "labelSelectors": {label_key: label_value}
-                                },
-                                "delay": {
-                                    "latency": latency,
-                                    "correlation": "100",
-                                    "jitter": jitter
-                                },
-                                "duration": duration,
-                                "direction": "to"
-                            }
-                        }
-                    
-                    elif chaos_type == "pod-kill":
-                        grace_period = "{{ outputs.determine_chaos_config.vars.grace_period }}"
-                        
-                        manifest = {
-                            "apiVersion": "chaos-mesh.org/v1alpha1",
-                            "kind": "PodChaos",
-                            "metadata": {
-                                "name": f"pod-kill-{execution_id}",
-                                "namespace": namespace
-                            },
-                            "spec": {
-                                "action": "pod-kill",
-                                "mode": "one",
-                                "selector": {
-                                    "namespaces": [namespace],
-                                    "labelSelectors": {label_key: label_value}
-                                },
-                                "gracePeriod": grace_period
-                            }
-                        }
-                    
-                    if manifest:
-                        manifest_yaml = yaml.dump(manifest)
-                        manifest_json = json.dumps(manifest)
-                        kind = manifest["kind"].lower() + "s"
-                        
-                        Kestra.outputs({
-                            "manifest": manifest_yaml,
-                            "manifest_json": manifest_json,
-                            "kind": kind
-                        })
-                        print(f"✅ Generated Chaos Mesh manifest for {chaos_type}", file=sys.stderr)
-                        print(manifest_yaml, file=sys.stderr)
-                    else:
-                        print(f"❌ Unknown chaos type: {chaos_type}", file=sys.stderr)
-                        sys.exit(1)
+      - id: verify_chaos_injection
+        type: io.kestra.plugin.scripts.python.Script
+        docker:
+          image: python:3.11-slim
+        script: |
+          import sys
 
-                - id: apply_chaos_mesh_experiment
-                  type: io.kestra.plugin.core.http.Request
-                  uri: "{{ inputs.kubernetes_api_url }}/apis/chaos-mesh.org/v1alpha1/namespaces/{{ inputs.chaos_namespace }}/{{ outputs.build_chaos_mesh_manifest.vars.kind }}"
-                  method: POST
-                  headers:
-                    Authorization: "Bearer {{ inputs.kubernetes_token }}"
-                    Content-Type: "application/json"
-                  body: "{{ outputs.build_chaos_mesh_manifest.vars.manifest_json }}"
-                  allowFailed: true
+          status_code = {{ outputs.inject_http_chaos.code }}
 
-                - id: log_chaos_mesh_success
-                  type: io.kestra.plugin.core.log.Log
-                  message: "🌪️ Chaos Mesh: Applied {{ outputs.determine_chaos_config.vars.chaos_type }} experiment ({{ inputs.chaos_intensity }})"
+          if status_code == 200:
+              print("✅ Chaos successfully injected into {{ inputs.service_name }}", file=sys.stderr)
+              print("   Type: {{ outputs.determine_chaos_config.vars.chaos_type }}", file=sys.stderr)
+              print("   Duration: {{ outputs.determine_chaos_config.vars.duration_seconds }}s", file=sys.stderr)
+          else:
+              print("⚠️  Chaos injection returned status {{ outputs.inject_http_chaos.code }}", file=sys.stderr)
+              print("   This is OK for demo mode - continuing with workflow", file=sys.stderr)
 
-              else:
-                - id: log_chaos_mesh_mock
-                  type: io.kestra.plugin.core.log.Log
-                  message: "🌪️ [MOCK] Chaos Mesh: Would apply {{ outputs.determine_chaos_config.vars.chaos_type }} ({{ inputs.chaos_intensity }} intensity, {{ inputs.chaos_duration }} duration)"
-
-          default:
-            - id: log_unsupported_chaos
-              type: io.kestra.plugin.core.log.Log
-              message: "⚠️ Unsupported chaos method: {{ outputs.determine_chaos_config.vars.method }}"
+      - id: wait_for_chaos_to_propagate
+        type: io.kestra.plugin.core.flow.Sleep
+        duration: PT5S
 
   # PHASE 1 — FETCH DEPLOYMENT HISTORY (GitHub)
   - id: fetch_deployment_history
@@ -400,7 +210,7 @@ tasks:
           import json
           import sys
           from kestra import Kestra
-          
+
           try:
               deployments_raw = """{{ outputs.github_fetch_deployments.body }}"""
               deployments = json.loads(deployments_raw) if isinstance(deployments_raw, str) else deployments_raw
@@ -445,19 +255,19 @@ tasks:
         script: |
           import json
           from kestra import Kestra
-          
+
           mock_history = [
               {"id": 101, "sha": "abc1234", "environment": "production", "created_at": "2025-12-12T10:00:00Z", "ref": "main"},
               {"id": 100, "sha": "def5678", "environment": "production", "created_at": "2025-12-11T15:30:00Z", "ref": "main"},
               {"id": 99, "sha": "ghi9012", "environment": "production", "created_at": "2025-12-10T09:15:00Z", "ref": "main"}
           ]
-          
+
           Kestra.outputs({
               "deployment_history": json.dumps(mock_history),
               "latest_sha": "abc1234",
               "source": "mock"
           })
-          
+
           print("📦 Using mock deployment history", file=sys.stderr)
 
   # PHASE 1B — CONSOLIDATE DEPLOYMENT DATA
@@ -498,7 +308,6 @@ tasks:
   - id: collect_signals
     type: io.kestra.plugin.core.flow.Parallel
     tasks:
-
       - id: fetch_metrics
         type: io.kestra.plugin.core.http.Request
         uri: "{{ inputs.metrics_url }}"
@@ -525,7 +334,7 @@ tasks:
       import json
       import sys
       from kestra import Kestra
-      
+
       try:
           raw_body = """{{ outputs.fetch_metrics.body }}"""
           
@@ -584,7 +393,7 @@ tasks:
               'health_status': 'unknown'
           })
 
-  # PHASE 4 — ANOMALY DETECTION
+  # PHASE 4 — ANOMALY DETECTION (IMPROVED)
   - id: anomaly_detection
     type: io.kestra.plugin.scripts.python.Script
     docker:
@@ -594,38 +403,88 @@ tasks:
     script: |
       from kestra import Kestra
       import sys
-      
+
       anomalies = []
       error_rate = {{ outputs.parse_metrics.vars.error_rate }}
       cpu = {{ outputs.parse_metrics.vars.cpu_usage }}
       memory = {{ outputs.parse_metrics.vars.memory_usage }}
       p99 = {{ outputs.parse_metrics.vars.p99_latency }}
       p95 = {{ outputs.parse_metrics.vars.p95_latency }}
-      
-      # Detect anomalies based on thresholds
-      if error_rate > 5:
-          anomalies.append(f"ERROR_RATE_SPIKE: {error_rate}%")
-      if cpu > 85:
-          anomalies.append(f"CPU_SPIKE: {cpu}%")
-      if memory > 85:
-          anomalies.append(f"MEMORY_SPIKE: {memory}%")
-      if p99 > 500:
-          anomalies.append(f"P99_LATENCY_SPIKE: {p99}ms")
-      if p95 > 300:
-          anomalies.append(f"P95_LATENCY_SPIKE: {p95}ms")
-      
-      anomaly_summary = ", ".join(anomalies) if anomalies else "No anomalies detected"
-      
-      Kestra.outputs({
-          "anomalies": anomalies,
-          "count": len(anomalies),
-          "summary": anomaly_summary
-      })
-      
-      print(f"   Anomaly Detection: {anomaly_summary}", file=sys.stderr)
-      print(f"   Total anomalies: {len(anomalies)}", file=sys.stderr)
 
-  # PHASE 5 — AI ANALYSIS
+      # CRITICAL anomalies (P0 triggers)
+      critical_anomalies = []
+      if error_rate > 10:
+          critical_anomalies.append(f"CRITICAL_ERROR_RATE: {error_rate}%")
+      if p99 > 800:
+          critical_anomalies.append(f"CRITICAL_P99_LATENCY: {p99}ms")
+      if cpu > 90:
+          critical_anomalies.append(f"CRITICAL_CPU: {cpu}%")
+      if memory > 90:
+          critical_anomalies.append(f"CRITICAL_MEMORY: {memory}%")
+
+      # WARNING anomalies (P1 triggers)
+      warning_anomalies = []
+      if 5 < error_rate <= 10:
+          warning_anomalies.append(f"WARNING_ERROR_RATE: {error_rate}%")
+      if 500 < p99 <= 800:
+          warning_anomalies.append(f"WARNING_P99_LATENCY: {p99}ms")
+      if 85 < cpu <= 90:
+          warning_anomalies.append(f"WARNING_CPU: {cpu}%")
+      if 85 < memory <= 90:
+          warning_anomalies.append(f"WARNING_MEMORY: {memory}%")
+
+      # MINOR anomalies (P2 triggers)
+      minor_anomalies = []
+      if 2 < error_rate <= 5:
+          minor_anomalies.append(f"MINOR_ERROR_RATE: {error_rate}%")
+      if 300 < p99 <= 500:
+          minor_anomalies.append(f"MINOR_P99_LATENCY: {p99}ms")
+      if 200 < p95 <= 400:
+          minor_anomalies.append(f"MINOR_P95_LATENCY: {p95}ms")
+      if 70 < cpu <= 85:
+          minor_anomalies.append(f"MINOR_CPU: {cpu}%")
+      if 70 < memory <= 85:
+          minor_anomalies.append(f"MINOR_MEMORY: {memory}%")
+
+      # Combine all anomalies
+      all_anomalies = critical_anomalies + warning_anomalies + minor_anomalies
+
+      # Create summary
+      if critical_anomalies:
+          severity_hint = "CRITICAL"
+          summary = f"CRITICAL: {', '.join(critical_anomalies)}"
+      elif warning_anomalies:
+          severity_hint = "WARNING"
+          summary = f"WARNING: {', '.join(warning_anomalies)}"
+      elif minor_anomalies:
+          severity_hint = "MINOR"
+          summary = f"MINOR: {', '.join(minor_anomalies)}"
+      else:
+          severity_hint = "NORMAL"
+          summary = "No anomalies detected"
+
+      # Add context if there are other anomalies
+      if len(all_anomalies) > 1:
+          summary += f" (Total: {len(all_anomalies)} anomalies)"
+
+      Kestra.outputs({
+          "anomalies": all_anomalies,
+          "critical_count": len(critical_anomalies),
+          "warning_count": len(warning_anomalies),
+          "minor_count": len(minor_anomalies),
+          "count": len(all_anomalies),
+          "summary": summary,
+          "severity_hint": severity_hint
+      })
+
+      print(f"🔍 Anomaly Detection Summary:", file=sys.stderr)
+      print(f"   Severity Hint: {severity_hint}", file=sys.stderr)
+      print(f"   Critical: {len(critical_anomalies)}", file=sys.stderr)
+      print(f"   Warning: {len(warning_anomalies)}", file=sys.stderr)
+      print(f"   Minor: {len(minor_anomalies)}", file=sys.stderr)
+      print(f"   Summary: {summary}", file=sys.stderr)
+
+  # PHASE 5 — AI ANALYSIS (IMPROVED)
   - id: ai_incident_analysis
     type: io.kestra.plugin.openai.ChatCompletion
     description: AI decision engine with deployment history context
@@ -647,18 +506,46 @@ tasks:
             "pagerduty_priority": "P1" | "P2" | "P3" | "P4" | "P5"
           }
 
-          Rules:
+          STRICT SEVERITY RULES (follow exactly):
+
+          P0 (CRITICAL) - Use ONLY when:
+          - Error rate > 10% OR
+          - P99 latency > 800ms OR
+          - CPU > 90% OR
+          - Memory > 90% OR
+          - ANY anomaly starts with "CRITICAL_"
+
+          P1 (MAJOR) - Use when:
+          - 5% < Error rate ≤ 10% OR
+          - 500ms < P99 latency ≤ 800ms OR
+          - 85% < CPU ≤ 90% OR
+          - 85% < Memory ≤ 90% OR
+          - ANY anomaly starts with "WARNING_"
+          - NO CRITICAL anomalies present
+
+          P2 (MODERATE) - Use when:
+          - 2% < Error rate ≤ 5% OR
+          - 300ms < P99 latency ≤ 500ms OR
+          - 70% < CPU ≤ 85% OR
+          - ANY anomaly starts with "MINOR_"
+          - NO WARNING or CRITICAL anomalies present
+
+          P3 (NORMAL) - Use when:
+          - Error rate ≤ 2% AND
+          - P99 latency ≤ 300ms AND
+          - CPU ≤ 70% AND
+          - Memory ≤ 70% AND
+          - No anomalies detected OR all metrics are in healthy range
+
+          Additional Rules:
           - confidence_score: 0-100, how confident you are in your analysis
-          - Use "rollback" only if you're confident the deployment caused the issue
-          - Use "monitor" for unclear situations
+          - Use "rollback" only if you're confident a recent deployment caused the issue
+          - Use "monitor" for unclear situations or when metrics are borderline
           - Use "escalate" for complex issues needing human intervention
-          - Error rate > 10% is P0 critical
-          - P99 latency > 800ms is P0 critical
-          - Error rate > 5% or P99 > 500ms is P1
-          - CPU/Memory > 90% is concerning
           - Consider deployment history when suggesting rollbacks
+          - If anomaly_severity_hint is provided, strongly consider it
           - pagerduty_priority should align with severity (P0→P1, P1→P2, etc.)
-          
+
           NO OTHER FIELDS. NO nested objects. NO markdown. ONLY this JSON object.
 
       - role: user
@@ -682,8 +569,13 @@ tasks:
           - Current Deployment: {{ outputs.parse_metrics.vars.deployment_id }}
           - Health Status: {{ outputs.parse_metrics.vars.health_status }}
 
-          DETECTED ANOMALIES ({{ outputs.anomaly_detection.vars.count }}):
-          {{ outputs.anomaly_detection.vars.summary }}
+          ANOMALY ANALYSIS:
+          - Total Anomalies: {{ outputs.anomaly_detection.vars.count }}
+          - Critical Anomalies: {{ outputs.anomaly_detection.vars.critical_count }}
+          - Warning Anomalies: {{ outputs.anomaly_detection.vars.warning_count }}
+          - Minor Anomalies: {{ outputs.anomaly_detection.vars.minor_count }}
+          - Severity Hint: {{ outputs.anomaly_detection.vars.severity_hint }}
+          - Summary: {{ outputs.anomaly_detection.vars.summary }}
 
           LOGS:
           {{ outputs.fetch_logs.body }}
@@ -693,7 +585,8 @@ tasks:
 
           MIN_CONFIDENCE_THRESHOLD: {{ inputs.min_confidence_for_rollback }}
 
-          Analyze the incident considering metrics, anomalies, and deployment history.
+          Analyze the incident following the STRICT SEVERITY RULES above.
+          Pay special attention to the Severity Hint and anomaly counts.
           If rollback is needed, suggest the previous deployment from the history.
           Respond with ONLY valid JSON.
 
@@ -710,24 +603,24 @@ tasks:
       from kestra import Kestra
 
       raw_content = """{{ outputs.ai_incident_analysis.choices[0].message.content }}"""
-      
+
       content = raw_content.strip()
-      
+
       # Remove markdown code blocks if present
       if content.startswith('```'):
           content = content[content.find('\n')+1:]
       if content.endswith('```'):
           content = content[:content.rfind('\n')]
-      
+
       content = content.strip()
-      
+
       try:
           data = json.loads(content)
       except json.JSONDecodeError as e:
           print(f"ERROR: Failed to parse JSON: {e}", file=sys.stderr)
           print(f"Raw content: {content}", file=sys.stderr)
           sys.exit(1)
-      
+
       Kestra.outputs({
           'severity': data.get('severity', 'UNKNOWN'),
           'confidence_score': data.get('confidence_score', 0),
@@ -737,7 +630,7 @@ tasks:
           'recommended_action': data.get('recommended_action', 'monitor'),
           'pagerduty_priority': data.get('pagerduty_priority', 'P3')
       })
-      
+
       print(json.dumps(data, indent=2), file=sys.stderr)
 
   # PHASE 8 — CONFIDENCE CHECK & ESCALATION
@@ -790,7 +683,6 @@ tasks:
     type: io.kestra.plugin.core.flow.Switch
     value: "{{ outputs.parse_ai_decision.vars.severity }}"
     cases:
-
       P0:
         - id: handle_p0
           type: io.kestra.plugin.core.flow.Sequential
@@ -1097,7 +989,7 @@ tasks:
             - id: log_p2_incident
               type: io.kestra.plugin.core.log.Log
               message: "🟡 P2 incident logged: {{ outputs.parse_ai_decision.vars.incident_summary }}"
-        
+
             - id: notify_p2_slack
               type: io.kestra.plugin.core.http.Request
               uri: "{{ inputs.slack_webhook }}"
@@ -1192,7 +1084,7 @@ tasks:
           import json
           import sys
           from kestra import Kestra
-          
+
           try:
               raw_body = """{{ outputs.fetch_post_metrics.body }}"""
               
@@ -1236,23 +1128,23 @@ tasks:
 
           before_error_rate = {{ outputs.parse_metrics.vars.error_rate }}
           after_error_rate = {{ outputs.parse_post_metrics.vars.error_rate }}
-          
+
           before_p99 = {{ outputs.parse_metrics.vars.p99_latency }}
           after_p99 = {{ outputs.parse_post_metrics.vars.p99_latency }}
-          
+
           before_deployment = {{ outputs.parse_metrics.vars.deployment_id }}
           after_deployment = {{ outputs.parse_post_metrics.vars.deployment_id }}
-          
+
           if before_error_rate > 0:
               error_improvement_pct = ((before_error_rate - after_error_rate) / before_error_rate) * 100
           else:
               error_improvement_pct = 0
-          
+
           if before_p99 > 0:
               latency_improvement_pct = ((before_p99 - after_p99) / before_p99) * 100
           else:
               latency_improvement_pct = 0
-          
+
           if after_error_rate < 1 and after_p99 < 200:
               health_status = "FULLY_RECOVERED"
           elif after_error_rate < before_error_rate * 0.5 and latency_improvement_pct > 30:
@@ -1263,7 +1155,7 @@ tasks:
               health_status = "STABLE"
           else:
               health_status = "DEGRADED"
-          
+
           Kestra.outputs({
               'health_status': health_status,
               'before_error_rate': before_error_rate,
@@ -1274,7 +1166,7 @@ tasks:
               'latency_improvement_pct': round(latency_improvement_pct, 2),
               'deployment_changed': before_deployment != after_deployment
           })
-          
+
           print(f"Health check complete: {health_status}", file=sys.stderr)
           print(f"Error rate: {before_error_rate}% -> {after_error_rate}% ({error_improvement_pct:.2f}% improvement)", file=sys.stderr)
           print(f"P99 latency: {before_p99}ms -> {after_p99}ms ({latency_improvement_pct:.2f}% improvement)", file=sys.stderr)
@@ -1344,10 +1236,10 @@ tasks:
       chaos_mode = "{{ inputs.chaos_mode }}".lower() == "true"
       pagerduty_used = "{{ inputs.pagerduty_token }}" != "mock"
       severity = "{{ outputs.parse_ai_decision.vars.severity }}"
-      
+
       # Check if health check ran (only for P0/P1/P2)
       health_check_ran = severity != "P3"
-      
+
       snapshot = {
           "execution_id": "{{ execution.id }}",
           "timestamp": "{{ execution.startDate }}",
@@ -1385,7 +1277,7 @@ tasks:
               "slack": True
           }
       }
-      
+
       # Only include health check data if it ran (P0/P1/P2)
       if health_check_ran:
           deployment_changed = "{{ outputs.compare_health_status.vars.deployment_changed | default('false') }}".lower() == "true"
