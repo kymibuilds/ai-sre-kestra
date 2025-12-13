@@ -640,11 +640,9 @@ tasks:
     condition: "{{ outputs.parse_ai_decision.vars.confidence_score < 70 }}"
     then:
       - id: escalate_to_humans
-        type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.slack_webhook }}"
-        method: POST
-        contentType: application/json
-        body: |
+        type: io.kestra.plugin.notifications.slack.SlackIncomingWebhook
+        url: "{{ inputs.slack_webhook }}"
+        payload: |
           {
             "text": "<!channel> 🚨 AI Confidence Low ({{ outputs.parse_ai_decision.vars.confidence_score }}%) - Human Review Required",
             "blocks": [
@@ -800,11 +798,9 @@ tasks:
                   message: "🚨 [MOCK] PagerDuty alert triggered - P0 CRITICAL: {{ inputs.service_name }} - {{ outputs.parse_ai_decision.vars.incident_summary }}"
 
             - id: slack_notify_p0
-              type: io.kestra.plugin.core.http.Request
-              uri: "{{ inputs.slack_webhook }}"
-              method: POST
-              contentType: application/json
-              body: |
+              type: io.kestra.plugin.notifications.slack.SlackIncomingWebhook
+              url: "{{ inputs.slack_webhook }}"
+              payload: |
                 {
                   "blocks": [
                     {
@@ -938,11 +934,9 @@ tasks:
                   message: "🟠 [MOCK] PagerDuty alert triggered - P1 MAJOR: {{ inputs.service_name }} - {{ outputs.parse_ai_decision.vars.incident_summary }}"
 
             - id: slack_notify_p1
-              type: io.kestra.plugin.core.http.Request
-              uri: "{{ inputs.slack_webhook }}"
-              method: POST
-              contentType: application/json
-              body: |
+              type: io.kestra.plugin.notifications.slack.SlackIncomingWebhook
+              url: "{{ inputs.slack_webhook }}"
+              payload: |
                 {
                   "blocks": [
                     {
@@ -1026,11 +1020,9 @@ tasks:
               message: "🟡 P2 incident logged: {{ outputs.parse_ai_decision.vars.incident_summary }}"
 
             - id: notify_p2_slack
-              type: io.kestra.plugin.core.http.Request
-              uri: "{{ inputs.slack_webhook }}"
-              method: POST
-              contentType: application/json
-              body: |
+              type: io.kestra.plugin.notifications.slack.SlackIncomingWebhook
+              url: "{{ inputs.slack_webhook }}"
+              payload: |
                 {
                   "blocks": [
                     {
@@ -1208,11 +1200,9 @@ tasks:
           print(f"Deployment: {before_deployment} -> {after_deployment}", file=sys.stderr)
 
       - id: notify_health_status
-        type: io.kestra.plugin.core.http.Request
-        uri: "{{ inputs.slack_webhook }}"
-        method: POST
-        contentType: application/json
-        body: |
+        type: io.kestra.plugin.notifications.slack.SlackIncomingWebhook
+        url: "{{ inputs.slack_webhook }}"
+        payload: |
           {
             "blocks": [
               {
@@ -1347,3 +1337,50 @@ triggers:
   - id: scheduled_monitor
     type: io.kestra.plugin.core.trigger.Schedule
     cron: "*/5 * * * *"
+
+errors:
+  - id: alert_on_workflow_failure
+    type: io.kestra.plugin.notifications.slack.SlackIncomingWebhook
+    url: "{{ inputs.slack_webhook }}"
+    payload: |
+      {
+        "text": "❌ AI Incident Commander workflow failed",
+        "blocks": [
+          {
+            "type": "header",
+            "text": {
+              "type": "plain_text",
+              "text": "❌ Workflow Failure",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "fields": [
+              {
+                "type": "mrkdwn",
+                "text": "*Service:*\n{{ inputs.service_name }}"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*Environment:*\n{{ inputs.environment }}"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*Execution ID:*\n{{ execution.id }}"
+              },
+              {
+                "type": "mrkdwn",
+                "text": "*Failed At:*\n{{ execution.startDate }}"
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "*Error:*\n```{{ error.message }}```"
+            }
+          }
+        ]
+      }
