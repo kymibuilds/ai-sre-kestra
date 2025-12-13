@@ -22,8 +22,8 @@ inputs:
   - id: slack_webhook
     type: STRING
     required: true
-    defaults: "https://hooks.slack.com/services/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"
-    description: "Enter your own slack webhook here to recieve messages."
+    defaults: "{{ secret('SLACK_WEBHOOK') }}"
+    description: "Enter your own slack webhook here to receive messages."
 
   - id: deployments_repo
     type: STRING
