@@ -107,7 +107,7 @@ tasks:
 
           chaos_type = "{{ inputs.chaos_type }}"
           intensity = "{{ inputs.chaos_intensity }}"
-          duration = {{ inputs.chaos_duration_seconds }}
+          duration = {{ inputs.chaos_duration }}
 
           # Define chaos configurations based on type and intensity
           configs = {
@@ -254,6 +254,7 @@ tasks:
           - pip install kestra
         script: |
           import json
+          import sys
           from kestra import Kestra
 
           mock_history = [
@@ -695,6 +696,7 @@ tasks:
                   type: io.kestra.plugin.core.flow.If
                   condition: "{{ inputs.github_token != 'mock' }}"
                   then:
+                    # Real GitHub mode - trigger GitHub Actions workflow
                     - id: trigger_github_action
                       type: io.kestra.plugin.core.http.Request
                       uri: "https://api.github.com/repos/{{ inputs.deployments_repo }}/actions/workflows/rollback.yml/dispatches"
@@ -703,24 +705,57 @@ tasks:
                         Authorization: "token {{ inputs.github_token }}"
                         Accept: "application/vnd.github+json"
                         Content-Type: "application/json"
+                        X-GitHub-Api-Version: "2022-11-28"
                       body: |
                         {
-                          "ref": "master",
+                          "ref": "main",
                           "inputs": {
                             "rollback_to": "{{ outputs.parse_ai_decision.vars.deployment_to_rollback }}",
                             "service": "{{ inputs.service_name }}",
                             "environment": "{{ inputs.environment }}",
-                            "execution_id": "{{ execution.id }}"
+                            "execution_id": "{{ execution.id }}",
+                            "reason": "{{ outputs.parse_ai_decision.vars.incident_summary }}",
+                            "confidence": "{{ outputs.parse_ai_decision.vars.confidence_score }}"
                           }
                         }
+                      allowFailed: false
 
-                    - id: log_rollback_success
+                    - id: log_github_action_triggered
                       type: io.kestra.plugin.core.log.Log
-                      message: "✔ GitHub Action triggered for rollback → {{ outputs.parse_ai_decision.vars.deployment_to_rollback }}"
+                      message: "✔ GitHub Action workflow triggered for rollback → deployment {{ outputs.parse_ai_decision.vars.deployment_to_rollback }}"
+
+                    - id: wait_for_github_action
+                      type: io.kestra.plugin.core.flow.Sleep
+                      duration: PT15S
+
+                    - id: log_github_action_status
+                      type: io.kestra.plugin.core.log.Log
+                      message: "⏳ GitHub Action is executing. Check https://github.com/{{ inputs.deployments_repo }}/actions for progress"
+
                   else:
+                    # Mock mode - direct API call to service
+                    - id: trigger_mock_rollback
+                      type: io.kestra.plugin.core.http.Request
+                      uri: "{{ inputs.service_url }}/deployment/{{ outputs.parse_ai_decision.vars.deployment_to_rollback }}/activate"
+                      method: POST
+                      contentType: application/json
+                      body: |
+                        {
+                          "reason": "AI-triggered rollback (mock mode) - {{ outputs.parse_ai_decision.vars.incident_summary }}",
+                          "confidence": {{ outputs.parse_ai_decision.vars.confidence_score }},
+                          "rollback_to": {{ outputs.parse_ai_decision.vars.deployment_to_rollback }},
+                          "execution_id": "{{ execution.id }}"
+                        }
+                      allowFailed: true
+
                     - id: log_rollback_mock
                       type: io.kestra.plugin.core.log.Log
-                      message: "🔄 [MOCK] Rollback would trigger → deployment {{ outputs.parse_ai_decision.vars.deployment_to_rollback }}"
+                      message: "🔄 [MOCK] Rollback triggered → deployment {{ outputs.parse_ai_decision.vars.deployment_to_rollback }}"
+
+                    - id: wait_for_mock_rollback
+                      type: io.kestra.plugin.core.flow.Sleep
+                      duration: PT5S
+
               else:
                 - id: skip_rollback_log
                   type: io.kestra.plugin.core.log.Log
