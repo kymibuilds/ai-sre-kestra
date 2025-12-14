@@ -7,7 +7,7 @@ AI Incident Commander is an end-to-end automation engine built on Kestra, GitHub
 The result: a hands-free SRE workflow that detects, analyzes, and resolves outages automatically.
 
 <p align="center">
-  <img src="docs/architecture.svg" width="800"/>
+  <img src="docs/architecture.png" width="800"/>
 </p>
 
 ## Table of Contents
